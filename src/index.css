@@ -1,0 +1,99 @@
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* ── Surface ramp (Warm Obsidian) ── */
+  --bg-surface:              #19120a;   /* global bg, left nav panel */
+  --bg-surface-dim:          #19120a;   /* central canvas workspace well */
+  --bg-surface-bright:       #40382e;   /* active/highlighted surfaces */
+  --bg-container-lowest:     #130d06;   /* far-left icon strip, right notes panel */
+  --bg-container-low:        #211a12;   /* de-emphasized cards, item hover bg */
+  --bg-container:            #251e16;   /* standard panels, toolbars */
+  --bg-container-high:       #302920;   /* tooltips, popovers, elevated menus */
+  --bg-container-highest:    #3c332a;   /* dialogs, explicit modal backgrounds */
+
+  /* ── Text & interface lines ── */
+  --text-primary:    #eee0d2;
+  --text-secondary:  #d7c3ae;
+  --text-muted:      #9f8e7a;
+  --border:          #9f8e7a;   /* crisp layout borders, active focus rings */
+  --border-subtle:   #524534;   /* subdued separators, tile dividers */
+  --border-glass:    rgba(159, 142, 122, 0.18);
+
+  /* ── Interactive accents ── */
+  --accent:           #ffc880;   /* primary interactive, glyph glow */
+  --accent-bright:    #ffd6a0;   /* hover/brightness variant */
+  --accent-container: #f5a623;   /* active selections, CTA backgrounds */
+  --accent-hover:     #fff0dc;
+
+  /* ── Font stacks ── */
+  --font-sans:  'Hanken Grotesk', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+
+  /* ── Layout ── */
+  --icon-rail-width:    48px;
+  --sidebar-width:     240px;
+  --right-panel-width: 300px;
+  --toolbar-height:     40px;
+
+  /* ── Spacing rhythm ── */
+  --micro-gap:  2px;
+  --unit:       4px;
+  --gutter:    16px;
+  --page-well: 24px;
+
+  /* ── Legacy aliases consumed by App.css ── */
+  --bg-primary:    var(--bg-surface-dim);
+  --bg-secondary:  var(--bg-container);
+  --bg-sidebar:    var(--bg-container-lowest);
+  --bg-toolbar:    var(--bg-container);
+  --text-tertiary: var(--text-muted); /* search modal / low-signal UI copy */
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+ul {
+  list-style: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
