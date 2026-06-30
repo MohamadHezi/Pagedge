@@ -134,6 +134,8 @@ pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM flashcards WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM outline_items WHERE pdf_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
     // Keep notes but sever the PDF reference so they survive as orphaned notes.
     conn.execute(
         "UPDATE notes SET source_pdf_id = NULL, source_page = NULL WHERE source_pdf_id = ?1",
@@ -1556,4 +1558,95 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
         .collect();
 
     serde_json::to_string(&pdfs).map_err(|e| e.to_string())
+}
+
+// ── Outline ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutlineItem {
+    pub id: String,
+    pub pdf_id: String,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub page: i64,
+    pub order_index: i64,
+    pub source: String,
+    pub created_at: String,
+}
+
+fn row_to_outline_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutlineItem> {
+    Ok(OutlineItem {
+        id:          row.get(0)?,
+        pdf_id:      row.get(1)?,
+        parent_id:   row.get(2)?,
+        title:       row.get(3)?,
+        page:        row.get(4)?,
+        order_index: row.get(5)?,
+        source:      row.get(6)?,
+        created_at:  row.get(7)?,
+    })
+}
+
+const OUTLINE_SELECT: &str =
+    "SELECT id, pdf_id, parent_id, title, page, order_index, source, created_at FROM outline_items";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutlineItemInput {
+    pub id: String,
+    pub pdf_id: String,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub page: i64,
+    pub order_index: i64,
+    pub source: String,
+}
+
+#[tauri::command]
+pub fn store_outline(
+    app: AppHandle,
+    pdf_id: String,
+    items: Vec<OutlineItemInput>,
+) -> Result<(), String> {
+    let mut conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM outline_items WHERE pdf_id = ?1",
+        rusqlite::params![pdf_id],
+    )
+    .map_err(|e| e.to_string())?;
+    for item in &items {
+        tx.execute(
+            "INSERT INTO outline_items (id, pdf_id, parent_id, title, page, order_index, source, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                item.id,
+                item.pdf_id,
+                item.parent_id,
+                item.title,
+                item.page,
+                item.order_index,
+                item.source,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_outline(app: AppHandle, pdf_id: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!("{OUTLINE_SELECT} WHERE pdf_id = ?1 ORDER BY order_index ASC"))
+        .map_err(|e| e.to_string())?;
+    let items: Vec<OutlineItem> = stmt
+        .query_map(rusqlite::params![pdf_id], row_to_outline_item)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    serde_json::to_string(&items).map_err(|e| e.to_string())
 }

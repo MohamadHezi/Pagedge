@@ -16,6 +16,7 @@ import { AnnotationDock } from "./AnnotationDock";
 import { TextBoxLayer, DEFAULT_W, DEFAULT_H } from "./TextBoxLayer";
 import { callAI } from "../services/aiService";
 import { generateFlashcardsForHighlights } from "../services/flashcardService";
+import { ensureOutline } from "../services/outlineService";
 
 // ── AI prompts ────────────────────────────────────────────────────────────────
 const EXPLAIN_SYSTEM = 'You are a helpful reading assistant. Be concise.';
@@ -750,6 +751,10 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     generationProgress,
     setGenerationProgress,
     startReview,
+    setOutline,
+    setOutlineLoading,
+    setOutlineAttempted,
+    setRequestOutlineExtraction,
   } = useStore();
 
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -848,6 +853,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       setPdfDoc(null);
       setNumPages(0);
       setCurrentPage(1);
+      setOutline([]);
 
       try {
         const bytes = await invoke<number[]>("read_file", { path: filePath });
@@ -876,6 +882,13 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         loadDrawings(pdfId).catch(() => {});
         loadTextBoxes(pdfId).catch(() => {});
         loadFlashcards(pdfId).catch(() => {});
+        // Outline extraction is deferred until the user expands the Outline
+        // section in the left nav — just hand it a trigger to call lazily.
+        setRequestOutlineExtraction(() => {
+          setOutlineAttempted(true);
+          setOutlineLoading(true);
+          ensureOutline(pdfId, doc).catch((err) => console.error('[outline]', err));
+        });
         setSelectedNoteId(null);
         storeSetCurrentPage(1);
       } catch (err) {
@@ -886,7 +899,10 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     };
 
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      setRequestOutlineExtraction(null);
+    };
   }, [filePath, pdfId]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Render pages + highlights ──────────────────────────────────────────────

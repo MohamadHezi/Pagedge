@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { useStore } from '../store';
 
 const PROVIDER_URLS: Record<string, string> = {
@@ -22,11 +23,14 @@ const PROVIDERS = [
 
 type TestState = 'idle' | 'testing' | 'ok' | 'error';
 
+const FREE_TIER_MONTHLY_CALLS = 30;
+
 export function SettingsPanel() {
   const {
     settingsPanelOpen, setSettingsPanelOpen,
     aiProvider, aiModel, aiBaseUrl, aiApiKey,
     setAiSettings,
+    user, signOut,
   } = useStore();
 
   const [provider, setProvider] = useState(aiProvider);
@@ -36,6 +40,11 @@ export function SettingsPanel() {
   const [testState, setTestState] = useState<TestState>('idle');
   const [testError, setTestError] = useState('');
   const [saving, setSaving]     = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (!settingsPanelOpen) return;
@@ -123,6 +132,22 @@ export function SettingsPanel() {
         </div>
 
         <div className="settings-body">
+          {user && (
+            <div className="settings-account">
+              <div className="settings-account-row">
+                <span className="settings-account-email">{user.email}</span>
+                <button className="settings-account-signout" onClick={() => signOut()}>
+                  Sign out
+                </button>
+              </div>
+              {user.tier === 'free' && (
+                <span className="settings-account-quota">
+                  AI Calls: {Math.max(0, FREE_TIER_MONTHLY_CALLS - (user.callsRemaining ?? FREE_TIER_MONTHLY_CALLS))} / {FREE_TIER_MONTHLY_CALLS} this month
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="settings-field">
             <label className="settings-label">Provider</label>
             <select
@@ -195,6 +220,10 @@ export function SettingsPanel() {
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
+
+        {appVersion && (
+          <p className="settings-version">Pagedge v{appVersion}</p>
+        )}
 
       </div>
     </div>

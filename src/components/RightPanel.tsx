@@ -12,6 +12,12 @@ const CHAT_SYSTEM =
   'You are a reading assistant. Answer questions about the provided document. ' +
   'Cite page numbers when relevant (e.g. "page 3"). Be concise and direct.';
 
+const TAG_SYSTEM =
+  'You are a tagging assistant. Read the note and suggest 3-6 relevant tags. ' +
+  "Tags should be short (1-3 words), lowercase, specific to the content's topic/domain — " +
+  "not generic words like 'note' or 'important'. Respond ONLY with a comma-separated list " +
+  'of tags, nothing else.';
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function relativeTime(iso: string): string {
@@ -120,11 +126,23 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
 // ── NoteEditor ────────────────────────────────────────────────────────────────
 
 function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
-  const { pdfs, jumpToPage, updateNote: storeUpdateNote, removeNote, setSelectedNoteId } =
-    useStore();
+  const {
+    pdfs,
+    jumpToPage,
+    updateNote: storeUpdateNote,
+    removeNote,
+    setSelectedNoteId,
+    suggestedTags,
+    setSuggestedTags,
+    clearSuggestedTags,
+    isSuggestingTags,
+    setIsSuggestingTags,
+  } = useStore();
 
   const [localTitle, setLocalTitle] = useState(note.title);
   const [localContent, setLocalContent] = useState(note.content_markdown);
+  const [localTags, setLocalTags] = useState<string[]>(note.tags);
+  const [tagInput, setTagInput] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const pendingRef = useRef<{ title?: string; content?: string }>({});
@@ -134,7 +152,10 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     setSaveState("idle");
     setLocalTitle(note.title);
     setLocalContent(note.content_markdown);
+    setLocalTags(note.tags);
+    setTagInput("");
     pendingRef.current = {};
+    clearSuggestedTags();
   }, [note.id]);
 
   const flush = useCallback(
@@ -172,6 +193,72 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     },
     [note.id, flush]
   );
+
+  const saveTags = useCallback(
+    async (newTags: string[]) => {
+      setLocalTags(newTags);
+      storeUpdateNote(note.id, { tags: newTags });
+      try {
+        await invoke<string>("update_note", { id: note.id, tags: newTags });
+      } catch (err) {
+        console.error("update_note (tags) failed:", err);
+      }
+    },
+    [note.id, storeUpdateNote]
+  );
+
+  const addTag = (raw: string) => {
+    const t = raw.trim().toLowerCase();
+    if (!t || localTags.includes(t)) return;
+    saveTags([...localTags, t]);
+  };
+
+  const removeTag = (tag: string) => {
+    saveTags(localTags.filter((t) => t !== tag));
+  };
+
+  const handleTagInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addTag(tagInput);
+      setTagInput("");
+    }
+  };
+
+  const handleSuggestTags = async () => {
+    if (!localContent.trim() || isSuggestingTags) return;
+    setIsSuggestingTags(true);
+    try {
+      const content = localContent.slice(0, 2000);
+      const response = await callAI([
+        { role: "system", content: TAG_SYSTEM },
+        { role: "user", content },
+      ]);
+      const suggestions = Array.from(
+        new Set(
+          response
+            .split(",")
+            .map((t) => t.trim().toLowerCase())
+            .filter((t) => t && !localTags.includes(t))
+        )
+      ).slice(0, 6);
+      setSuggestedTags(suggestions);
+    } catch (err) {
+      console.error("tag suggestion failed:", err);
+    } finally {
+      setIsSuggestingTags(false);
+    }
+  };
+
+  const applySuggestion = (tag: string) => {
+    addTag(tag);
+    setSuggestedTags(suggestedTags.filter((t) => t !== tag));
+  };
+
+  const addAllSuggestions = () => {
+    saveTags(Array.from(new Set([...localTags, ...suggestedTags])));
+    clearSuggestedTags();
+  };
 
   const handleDelete = async () => {
     clearTimeout(saveTimerRef.current);
@@ -232,6 +319,56 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
             placeholder="Untitled"
             spellCheck
           />
+
+          <div className="note-tags-row">
+            {localTags.map((t) => (
+              <span key={t} className="note-tag-pill">
+                {t}
+                <button
+                  className="note-tag-remove"
+                  title="Remove tag"
+                  onClick={() => removeTag(t)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <input
+              className="note-tag-input"
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              onKeyDown={handleTagInputKeyDown}
+              placeholder="+ tag"
+            />
+            {localContent.trim() && (
+              <button
+                className="note-tag-suggest-btn"
+                onClick={handleSuggestTags}
+                disabled={isSuggestingTags}
+                title="Suggest tags with AI"
+              >
+                {isSuggestingTags ? "Thinking…" : "✦ Suggest tags"}
+              </button>
+            )}
+          </div>
+
+          {suggestedTags.length > 0 && (
+            <div className="note-tags-suggested-row">
+              {suggestedTags.map((t) => (
+                <button
+                  key={t}
+                  className="note-tag-pill note-tag-pill--suggested"
+                  onClick={() => applySuggestion(t)}
+                  title="Add this tag"
+                >
+                  + {t}
+                </button>
+              ))}
+              <button className="note-tag-add-all" onClick={addAllSuggestions}>
+                + Add all
+              </button>
+            </div>
+          )}
 
           <div data-color-mode="dark">
             <MDEditor
@@ -569,6 +706,8 @@ export function RightPanel() {
     rightPanelOpen,
     rightPanelTab,
     setRightPanelTab,
+    activeTagFilter,
+    setActiveTagFilter,
   } = useStore();
 
   // ── Resize (hooks before early return) ────────────────────────────────────
@@ -606,6 +745,11 @@ export function RightPanel() {
   const selectedNote = selectedNoteId
     ? (notes.find((n) => n.id === selectedNoteId) ?? null)
     : null;
+
+  const allTags = Array.from(new Set(notes.flatMap((n) => n.tags))).sort();
+  const visibleNotes = activeTagFilter
+    ? notes.filter((n) => n.tags.includes(activeTagFilter))
+    : notes;
 
   const handleNewNote = async () => {
     try {
@@ -665,15 +809,32 @@ export function RightPanel() {
           </div>
 
           {rightPanelTab === 'notes' && (
-            <div className="note-list">
-              {notes.length === 0 ? (
-                <p className="note-empty">No notes yet. Hit + to create one linked to this page.</p>
-              ) : (
-                notes.map((n) => (
-                  <NoteCard key={n.id} note={n} onClick={() => setSelectedNoteId(n.id)} />
-                ))
+            <>
+              {allTags.length > 0 && (
+                <div className="note-tag-filter-bar">
+                  {allTags.map((t) => (
+                    <button
+                      key={t}
+                      className={`note-tag-filter-chip${activeTagFilter === t ? ' note-tag-filter-chip--active' : ''}`}
+                      onClick={() => setActiveTagFilter(activeTagFilter === t ? null : t)}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
               )}
-            </div>
+              <div className="note-list">
+                {notes.length === 0 ? (
+                  <p className="note-empty">No notes yet. Hit + to create one linked to this page.</p>
+                ) : visibleNotes.length === 0 ? (
+                  <p className="note-empty">No notes with that tag.</p>
+                ) : (
+                  visibleNotes.map((n) => (
+                    <NoteCard key={n.id} note={n} onClick={() => setSelectedNoteId(n.id)} />
+                  ))
+                )}
+              </div>
+            </>
           )}
 
           {rightPanelTab === 'highlights' && <HighlightsView />}

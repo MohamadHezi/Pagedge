@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { ingestPdf } from "../services/ingestionService";
+import { OutlineSection } from "./OutlinePanel";
 import type { Flashcard } from "../types";
 
 export function LibrarySidebar() {
@@ -123,8 +124,11 @@ export function LibrarySidebar() {
         </div>
       )}
 
-      {/* ── Scrollable 3-section tree ── */}
+      {/* ── Scrollable section tree ── */}
       <div className="nav-scroll">
+
+        {/* Section 0 — OUTLINE (only when a PDF is open) */}
+        <OutlineSection />
 
         {/* Section 1 — PINNED */}
         <div className="nav-section">

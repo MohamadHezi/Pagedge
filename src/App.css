@@ -1400,6 +1400,127 @@
   min-height: 16px;
 }
 
+/* ── Note tags (editor) ── */
+.note-tags-row,
+.note-tags-suggested-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.note-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-container-low);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  line-height: 1.2;
+}
+
+.note-tag-pill--suggested {
+  background: transparent;
+  border: 1px dashed var(--border-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.note-tag-pill--suggested:hover {
+  color: var(--accent-bright);
+  border-color: var(--accent);
+}
+
+.note-tag-remove {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 -2px 0 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.note-tag-remove:hover {
+  color: #ff6b6b;
+}
+
+.note-tag-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  width: 64px;
+  font-family: inherit;
+}
+.note-tag-input::placeholder {
+  color: var(--text-muted);
+}
+
+.note-tag-suggest-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--accent-bright);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+.note-tag-suggest-btn:hover {
+  text-decoration: underline;
+}
+.note-tag-suggest-btn:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  text-decoration: none;
+}
+
+.note-tag-add-all {
+  background: none;
+  border: none;
+  color: var(--accent-bright);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.note-tag-add-all:hover {
+  text-decoration: underline;
+}
+
+/* ── Note tag filter bar (list view) ── */
+.note-tag-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.note-tag-filter-chip {
+  background: var(--bg-container-low);
+  color: var(--text-muted);
+  border: none;
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 0.1s, background 0.1s;
+}
+.note-tag-filter-chip:hover {
+  color: var(--text-secondary);
+  background: var(--bg-container-high);
+}
+.note-tag-filter-chip--active {
+  color: var(--accent-bright);
+  background: rgba(255, 214, 10, 0.12);
+}
+
 /* ── Viewer toolbar "new note" push ── */
 .vt-group--push {
   margin-left: auto;
@@ -1749,6 +1870,48 @@
   overflow-y: auto;
 }
 
+.settings-account {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-account-email {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-signout {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  flex-shrink: 0;
+}
+.settings-account-signout:hover { color: var(--text-secondary); }
+
+.settings-account-quota {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -1799,6 +1962,13 @@
   border-top: 1px solid var(--border);
 }
 
+.settings-version {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 10px 18px 14px;
+}
+
 .settings-btn {
   border: none;
   border-radius: 7px;
@@ -1822,6 +1992,101 @@
   color: #0e0e0e;
 }
 .settings-btn--primary:hover:not(:disabled) { background: var(--accent-bright); }
+
+/* ── Auth modal ── */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-modal {
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  background: rgba(19, 13, 6, 0.94);
+  border: 1px solid var(--border-glass);
+  border-radius: 14px;
+  backdrop-filter: blur(24px);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7);
+  padding: 28px 26px 22px;
+  animation: search-modal-in 0.15s ease;
+}
+
+.auth-brand {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.auth-brand-mark {
+  font-family: var(--font-serif, inherit);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+
+.auth-tabs {
+  display: flex;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 3px;
+  margin-bottom: 18px;
+}
+
+.auth-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  padding: 7px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.auth-tab--active {
+  background: var(--bg-container-high);
+  color: var(--text-primary);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-submit-btn {
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #0e0e0e;
+  font-size: 13.5px;
+  font-family: inherit;
+  font-weight: 600;
+  padding: 10px 0;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+  margin-top: 2px;
+}
+.auth-submit-btn:hover:not(:disabled) { background: var(--accent-bright); }
+.auth-submit-btn:disabled { opacity: 0.55; cursor: default; }
+
+.auth-legal {
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: 18px;
+}
 
 /* ── Explain panel ── */
 .explain-panel {
@@ -2838,6 +3103,124 @@
    the --bg-surface (body) through as a dark channel line. */
 .nav-section + .nav-section {
   border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Outline accordion header (left nav, only while a PDF is open) ── */
+.nav-section-header--toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.nav-section-header--toggle:hover {
+  background: var(--bg-container-low);
+}
+
+.outline-section-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0.75;
+  transition: transform 0.15s ease;
+}
+
+.outline-section-chevron--expanded {
+  transform: rotate(90deg);
+}
+
+/* Grid-row collapse trick: animates 0fr → 1fr so height changes smoothly
+   without measuring scrollHeight in JS, and the sections below (Pinned,
+   Collections) slide as a natural side effect of the flex-column layout. */
+.outline-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.outline-collapse--expanded {
+  grid-template-rows: 1fr;
+}
+
+.outline-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Outline tree (left nav, only while a PDF is open) ── */
+.outline-tree {
+  display: flex;
+  flex-direction: column;
+}
+
+.outline-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 18px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.outline-item:hover {
+  background: var(--bg-container-low);
+  color: var(--text-primary);
+}
+
+.outline-item--active {
+  color: var(--accent-bright);
+  background: rgba(255, 214, 10, 0.08);
+}
+
+.outline-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: transform 0.12s ease, color 0.12s ease;
+}
+
+.outline-chevron--expanded {
+  transform: rotate(90deg);
+}
+
+.outline-chevron--spacer {
+  visibility: hidden;
+}
+
+.outline-item:hover .outline-chevron {
+  color: var(--text-secondary);
+}
+
+.outline-item-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outline-item-page {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
 }
 
 /* ── Drawing canvas layer ───────────────────────────────────────────────────── */

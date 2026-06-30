@@ -8,16 +8,23 @@ import { SummaryPanel } from "./components/SummaryPanel";
 import { SearchModal } from "./components/SearchModal";
 import { ExportDialog } from "./components/ExportDialog";
 import { ReviewMode } from "./components/ReviewMode";
+import { AuthModal } from "./components/AuthModal";
 import { useStore } from "./store";
+import { checkForUpdates } from "./services/updateService";
 import "./App.css";
 
 function App() {
-  const { loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen } = useStore();
+  const {
+    loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen,
+    initAuth, isAuthenticated, authLoading,
+  } = useStore();
 
   useEffect(() => {
     loadPdfs().catch(console.error);
     loadAiSettings().catch(console.error);
-  }, [loadPdfs, loadAiSettings]);
+    initAuth();
+    checkForUpdates();
+  }, [loadPdfs, loadAiSettings, initAuth]);
 
   // Ctrl+K / Cmd+K global shortcut to open search
   useEffect(() => {
@@ -30,6 +37,18 @@ function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [setSearchModalOpen]);
+
+  if (authLoading) {
+    return <div className="app-shell auth-loading-shell" />;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="app-shell">
+        <AuthModal />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">

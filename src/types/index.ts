@@ -117,3 +117,14 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
 }
+
+export interface OutlineItem {
+  id: string;
+  pdf_id: string;
+  parent_id: string | null;
+  title: string;
+  page: number;
+  order_index: number;
+  source: 'embedded' | 'ai-generated';
+  created_at: string;
+}

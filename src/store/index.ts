@@ -1,9 +1,26 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard } from "../types";
+import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
+import { resolveSession, signOut as signOutApi } from "../services/authService";
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  tier: 'free' | 'pro';
+  callsRemaining: number | null;
+}
 
 interface AppState {
+  // ── Auth ──────────────────────────────────────────────────────────────────────
+  user: AuthUser | null;
+  isAuthenticated: boolean;
+  authLoading: boolean;
+  setUser: (user: AuthUser) => void;
+  clearUser: () => void;
+  initAuth: () => Promise<void>;
+  signOut: () => Promise<void>;
+
   // ── PDFs ────────────────────────────────────────────────────────────────────
   pdfs: Pdf[];
   selectedPdfId: string | null;
@@ -139,9 +156,72 @@ interface AppState {
   setIsGeneratingFlashcards: (b: boolean) => void;
   generationProgress: { done: number; total: number } | null;
   setGenerationProgress: (p: { done: number; total: number } | null) => void;
+
+  // ── Tags ──────────────────────────────────────────────────────────────────────
+  suggestedTags: string[];
+  setSuggestedTags: (tags: string[]) => void;
+  clearSuggestedTags: () => void;
+  isSuggestingTags: boolean;
+  setIsSuggestingTags: (b: boolean) => void;
+  activeTagFilter: string | null;
+  setActiveTagFilter: (tag: string | null) => void;
+
+  // ── Outline ───────────────────────────────────────────────────────────────────
+  outline: OutlineItem[];
+  setOutline: (items: OutlineItem[]) => void;
+  loadOutline: (pdfId: string) => Promise<void>;
+  outlineLoading: boolean;
+  setOutlineLoading: (loading: boolean) => void;
+  expandedOutlineIds: Set<string>;
+  toggleOutlineExpanded: (id: string) => void;
+  // Accordion section state — collapsed by default; extraction is deferred
+  // until the user expands the section for the first time (see outlineAttempted).
+  isOutlineSectionExpanded: boolean;
+  setOutlineSectionExpanded: (expanded: boolean) => void;
+  outlineAttempted: boolean;
+  setOutlineAttempted: (attempted: boolean) => void;
+  // Set by PdfViewer once the PDF.js document is loaded; lets the (lazily
+  // mounted) OutlinePanel kick off extraction without holding its own
+  // reference to the PDF.js document.
+  requestOutlineExtraction: (() => void) | null;
+  setRequestOutlineExtraction: (fn: (() => void) | null) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
+  // ── Auth ──────────────────────────────────────────────────────────────────────
+  user: null,
+  isAuthenticated: false,
+  authLoading: true,
+
+  setUser: (user) => set({ user, isAuthenticated: true }),
+  clearUser: () => set({ user: null, isAuthenticated: false }),
+
+  initAuth: async () => {
+    set({ authLoading: true });
+    try {
+      const resolved = await resolveSession();
+      if (!resolved) {
+        set({ user: null, isAuthenticated: false });
+        return;
+      }
+      const { me } = resolved;
+      set({
+        user: { id: me.user_id, email: me.email, tier: me.tier, callsRemaining: me.calls_remaining },
+        isAuthenticated: true,
+      });
+    } catch (err) {
+      console.error('Failed to resolve session:', err);
+      set({ user: null, isAuthenticated: false });
+    } finally {
+      set({ authLoading: false });
+    }
+  },
+
+  signOut: async () => {
+    await signOutApi();
+    set({ user: null, isAuthenticated: false });
+  },
+
   // ── PDFs ────────────────────────────────────────────────────────────────────
   pdfs: [],
   selectedPdfId: null,
@@ -182,7 +262,7 @@ export const useStore = create<AppState>((set) => ({
       ),
     })),
 
-  selectPdf: (id) => set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [] }),
+  selectPdf: (id) => set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null }),
 
   loadPdfs: async () => {
     const json = await invoke<string>("get_pdfs");
@@ -408,4 +488,42 @@ export const useStore = create<AppState>((set) => ({
   setIsGeneratingFlashcards: (b) => set({ isGeneratingFlashcards: b }),
   generationProgress: null,
   setGenerationProgress: (p) => set({ generationProgress: p }),
+
+  // ── Tags ──────────────────────────────────────────────────────────────────────
+  suggestedTags: [],
+  setSuggestedTags: (tags) => set({ suggestedTags: tags }),
+  clearSuggestedTags: () => set({ suggestedTags: [] }),
+  isSuggestingTags: false,
+  setIsSuggestingTags: (b) => set({ isSuggestingTags: b }),
+  activeTagFilter: null,
+  setActiveTagFilter: (tag) => set({ activeTagFilter: tag }),
+
+  // ── Outline ───────────────────────────────────────────────────────────────────
+  outline: [],
+  setOutline: (items) => set({ outline: items }),
+
+  loadOutline: async (pdfId: string) => {
+    const json = await invoke<string>('get_outline', { pdfId });
+    const outline: OutlineItem[] = JSON.parse(json);
+    set({ outline });
+  },
+
+  outlineLoading: false,
+  setOutlineLoading: (loading) => set({ outlineLoading: loading }),
+
+  expandedOutlineIds: new Set(),
+  toggleOutlineExpanded: (id) =>
+    set((state) => {
+      const next = new Set(state.expandedOutlineIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { expandedOutlineIds: next };
+    }),
+
+  isOutlineSectionExpanded: false,
+  setOutlineSectionExpanded: (expanded) => set({ isOutlineSectionExpanded: expanded }),
+  outlineAttempted: false,
+  setOutlineAttempted: (attempted) => set({ outlineAttempted: attempted }),
+  requestOutlineExtraction: null,
+  setRequestOutlineExtraction: (fn) => set({ requestOutlineExtraction: fn }),
 }));

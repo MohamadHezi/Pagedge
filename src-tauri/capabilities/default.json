@@ -6,9 +6,13 @@
     "core:default",
     "dialog:default",
     "dialog:allow-open",
+    "dialog:allow-ask",
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-write-text-file",
-    "fs:allow-mkdir"
+    "fs:allow-mkdir",
+    "updater:default",
+    "process:allow-restart",
+    "store:default"
   ]
 }

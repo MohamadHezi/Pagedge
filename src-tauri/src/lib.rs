@@ -5,10 +5,10 @@ use commands::{
     create_note, delete_chunks_for_pdf, delete_drawing, delete_flashcard, delete_highlight,
     delete_note, delete_pdf, delete_text_box, export_annotated_pdf, extract_pdf_text,
     get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
-    get_flashcards, get_highlights, get_notes, get_pdfs, get_setting, get_text_boxes,
+    get_flashcards, get_highlights, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
     open_file_dialog, read_file, rename_pdf, reveal_in_folder, set_setting, store_chunks,
-    update_drawing_points, update_flashcard_review, update_last_opened, update_note,
-    update_pdf_ingestion_status, update_text_box,
+    store_outline, update_drawing_points, update_flashcard_review, update_last_opened,
+    update_note, update_pdf_ingestion_status, update_text_box,
 };
 use tauri::Manager;
 
@@ -16,6 +16,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
@@ -141,7 +144,21 @@ pub fn run() {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_flashcards_pdf ON flashcards(pdf_id);
-                CREATE INDEX IF NOT EXISTS idx_flashcards_review ON flashcards(next_review);",
+                CREATE INDEX IF NOT EXISTS idx_flashcards_review ON flashcards(next_review);
+
+                CREATE TABLE IF NOT EXISTS outline_items (
+                    id          TEXT PRIMARY KEY,
+                    pdf_id      TEXT NOT NULL,
+                    parent_id   TEXT,
+                    title       TEXT NOT NULL,
+                    page        INTEGER NOT NULL,
+                    order_index INTEGER NOT NULL,
+                    source      TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    FOREIGN KEY (pdf_id) REFERENCES pdfs(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_outline_pdf ON outline_items(pdf_id);",
             )
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
@@ -283,6 +300,8 @@ pub fn run() {
             update_flashcard_review,
             export_annotated_pdf,
             reveal_in_folder,
+            store_outline,
+            get_outline,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
