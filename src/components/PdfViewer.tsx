@@ -15,6 +15,7 @@ import { LensSwitcher } from "./LensSwitcher";
 import { AnnotationDock } from "./AnnotationDock";
 import { TextBoxLayer, DEFAULT_W, DEFAULT_H } from "./TextBoxLayer";
 import { callAI } from "../services/aiService";
+import { generateFlashcardsForHighlights } from "../services/flashcardService";
 
 // ── AI prompts ────────────────────────────────────────────────────────────────
 const EXPLAIN_SYSTEM = 'You are a helpful reading assistant. Be concise.';
@@ -740,6 +741,15 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     placingTextBox,
     setPlacingTextBox,
     setEditingTextBoxId,
+    setExportDialogOpen,
+    flashcards,
+    loadFlashcards,
+    addFlashcard,
+    isGeneratingFlashcards,
+    setIsGeneratingFlashcards,
+    generationProgress,
+    setGenerationProgress,
+    startReview,
   } = useStore();
 
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -757,6 +767,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   useEffect(() => { selectedDrawingIdRef.current = selectedDrawingId; }, [selectedDrawingId]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const [flashGenResult, setFlashGenResult] = useState<{ count: number } | null>(null);
   const [hlPopup, setHlPopup] = useState<HlPopupState | null>(null);
   const [hlPicker, setHlPicker] = useState<HlPickerState | null>(null);
   const [explainPanel, setExplainPanel] = useState<ExplainState | null>(null);
@@ -825,6 +836,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       setHlPicker(null);
       setSelectedDrawingId(null);
       setTrashPos(null);
+      setFlashGenResult(null);
       // Reset draw session state on PDF switch
       isDrawingRef.current = false;
       currentStrokeRef.current = [];
@@ -863,6 +875,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         loadNotes(pdfId).catch(() => {});
         loadDrawings(pdfId).catch(() => {});
         loadTextBoxes(pdfId).catch(() => {});
+        loadFlashcards(pdfId).catch(() => {});
         setSelectedNoteId(null);
         storeSetCurrentPage(1);
       } catch (err) {
@@ -1139,6 +1152,38 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       setIsSummarizing(false);
     }
   }, [activeLens, highlights, setSummary, setIsSummarizing, clearSummary, showToast]);
+
+  const handleGenerateFlashcards = useCallback(async () => {
+    const existingIds = new Set(flashcards.map((f) => f.source_highlight_id));
+    const greenHighlights = highlights.filter((h) => h.color === 'green');
+    const pending = greenHighlights.filter((h) => !existingIds.has(h.id));
+    if (pending.length === 0) {
+      showToast(
+        greenHighlights.length === 0
+          ? 'No flashcard highlights yet'
+          : 'All flashcard highlights already have cards'
+      );
+      return;
+    }
+    setIsGeneratingFlashcards(true);
+    setGenerationProgress({ done: 0, total: pending.length });
+    setFlashGenResult(null);
+    try {
+      const created = await generateFlashcardsForHighlights(pending, setGenerationProgress);
+      created.forEach(addFlashcard);
+      if (created.length > 0) {
+        setFlashGenResult({ count: created.length });
+      } else {
+        showToast('Flashcard generation failed for all highlights');
+      }
+    } catch (err) {
+      console.error('[flashcards] Generation failed:', err);
+      showToast(err instanceof Error ? err.message : 'Flashcard generation failed');
+    } finally {
+      setIsGeneratingFlashcards(false);
+      setGenerationProgress(null);
+    }
+  }, [highlights, flashcards, addFlashcard, setIsGeneratingFlashcards, setGenerationProgress, showToast]);
 
   // ── Save explanation to notes ─────────────────────────────────────────────
   const handleSaveExplainToNotes = useCallback(async () => {
@@ -1856,8 +1901,38 @@ export function PdfViewer({ filePath, pdfId }: Props) {
           </button>
         )}
 
+        {/* ── Floating "Generate Flashcards" widget (Flashcards lens only) ── */}
+        {activeLens === 'flashcards' && (
+          <button
+            className="lens-generate-flashcards-float"
+            title="Generate flashcards from green highlights"
+            onClick={handleGenerateFlashcards}
+            disabled={isGeneratingFlashcards}
+          >
+            {isGeneratingFlashcards
+              ? `Generating ${generationProgress?.done ?? 0}/${generationProgress?.total ?? 0}…`
+              : <>🎴 Generate Flashcards</>}
+          </button>
+        )}
+
         {/* ── Lens action toast ── */}
         {toast && <div className="lens-toast">{toast}</div>}
+
+        {/* ── Flashcard generation completion toast ── */}
+        {flashGenResult && (
+          <div className="flash-gen-toast">
+            <span>{flashGenResult.count} flashcard{flashGenResult.count === 1 ? '' : 's'} created</span>
+            <button
+              className="flash-gen-toast-btn"
+              onClick={() => {
+                startReview([...flashcards].sort((a, b) => a.page - b.page));
+                setFlashGenResult(null);
+              }}
+            >
+              Review now
+            </button>
+          </div>
+        )}
 
         {/* ── PDF canvas ── */}
         <div
@@ -1930,6 +2005,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
               setSelectedDrawingId(null);
               setTrashPos(null);
             }}
+            onExportPdf={() => setExportDialogOpen(true)}
           />
         </div>
       </div>

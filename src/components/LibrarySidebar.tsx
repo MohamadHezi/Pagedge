@@ -2,11 +2,13 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { ingestPdf } from "../services/ingestionService";
+import type { Flashcard } from "../types";
 
 export function LibrarySidebar() {
   const {
     pdfs, selectedPdfId, selectPdf, leftPanelOpen,
     ingestionStatus, isModelLoading, addPdf, deletePdf, renamePdf,
+    startReview,
   } = useStore();
 
   // ── Local interaction state ───────────────────────────────────────────────
@@ -18,6 +20,16 @@ export function LibrarySidebar() {
   // ── Resize ────────────────────────────────────────────────────────────────
   const sidebarRef  = useRef<HTMLElement>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
+
+  const handleFlashcardDocumentsClick = useCallback(async () => {
+    const json = await invoke<string>('get_all_flashcards');
+    const all: Flashcard[] = JSON.parse(json);
+    const now = Date.now();
+    const due = all
+      .filter((f) => new Date(f.next_review).getTime() <= now)
+      .sort((a, b) => new Date(a.next_review).getTime() - new Date(b.next_review).getTime());
+    startReview(due);
+  }, [startReview]);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -280,7 +292,7 @@ export function LibrarySidebar() {
             <span className="nav-tree-item-label">Recent</span>
           </button>
 
-          <button className="nav-tree-item" title="Documents with flashcard highlights">
+          <button className="nav-tree-item" title="Documents with flashcard highlights" onClick={handleFlashcardDocumentsClick}>
             <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="6" width="20" height="14" rx="2" />
               <path d="M16 6V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />

@@ -90,6 +90,22 @@ export interface TextBox {
   updated_at: string;
 }
 
+export interface Flashcard {
+  id: string;
+  source_highlight_id: string;
+  pdf_id: string;
+  page: number;
+  front: string;
+  back: string;
+  interval: number;
+  ease_factor: number;
+  repetitions: number;
+  next_review: string;
+  created_at: string;
+}
+
+export type ReviewQuality = 'again' | 'hard' | 'good' | 'easy';
+
 export interface AiMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;

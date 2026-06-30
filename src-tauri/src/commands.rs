@@ -132,6 +132,8 @@ pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM text_boxes WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM flashcards WHERE pdf_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
     // Keep notes but sever the PDF reference so they survive as orphaned notes.
     conn.execute(
         "UPDATE notes SET source_pdf_id = NULL, source_page = NULL WHERE source_pdf_id = ?1",
@@ -767,6 +769,691 @@ pub fn delete_text_box(app: AppHandle, id: String) -> Result<(), String> {
     conn.execute("DELETE FROM text_boxes WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── Flashcards ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Flashcard {
+    pub id: String,
+    pub source_highlight_id: String,
+    pub pdf_id: String,
+    pub page: i64,
+    pub front: String,
+    pub back: String,
+    pub interval: f64,
+    pub ease_factor: f64,
+    pub repetitions: i64,
+    pub next_review: String,
+    pub created_at: String,
+}
+
+fn row_to_flashcard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Flashcard> {
+    Ok(Flashcard {
+        id:                  row.get(0)?,
+        source_highlight_id: row.get(1)?,
+        pdf_id:              row.get(2)?,
+        page:                row.get(3)?,
+        front:               row.get(4)?,
+        back:                row.get(5)?,
+        interval:            row.get(6)?,
+        ease_factor:         row.get(7)?,
+        repetitions:         row.get(8)?,
+        next_review:         row.get(9)?,
+        created_at:          row.get(10)?,
+    })
+}
+
+const FC_SELECT: &str =
+    "SELECT id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at FROM flashcards";
+
+#[tauri::command]
+pub fn add_flashcard(
+    app: AppHandle,
+    source_highlight_id: String,
+    pdf_id: String,
+    page: i64,
+    front: String,
+    back: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let interval = 0.0_f64;
+    let ease_factor = 2.5_f64;
+    let repetitions = 0_i64;
+
+    conn.execute(
+        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+        rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let card = Flashcard {
+        id, source_highlight_id, pdf_id, page, front, back,
+        interval, ease_factor, repetitions,
+        next_review: now.clone(), created_at: now,
+    };
+    serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_flashcards(app: AppHandle, pdf_id: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!("{FC_SELECT} WHERE pdf_id = ?1 ORDER BY page ASC, created_at ASC"))
+        .map_err(|e| e.to_string())?;
+    let cards: Vec<Flashcard> = stmt
+        .query_map(rusqlite::params![pdf_id], row_to_flashcard)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    serde_json::to_string(&cards).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_all_flashcards(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!("{FC_SELECT} ORDER BY next_review ASC"))
+        .map_err(|e| e.to_string())?;
+    let cards: Vec<Flashcard> = stmt
+        .query_map([], row_to_flashcard)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    serde_json::to_string(&cards).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_flashcard(app: AppHandle, id: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM flashcards WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_flashcard_review(
+    app: AppHandle,
+    id: String,
+    interval: f64,
+    ease_factor: f64,
+    repetitions: i64,
+    next_review: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE flashcards SET
+            interval    = ?1,
+            ease_factor = ?2,
+            repetitions = ?3,
+            next_review = ?4
+         WHERE id = ?5",
+        rusqlite::params![interval, ease_factor, repetitions, next_review, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let card = conn
+        .query_row(&format!("{FC_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_flashcard)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+// ── Export annotated PDF ─────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+struct ExportDrawPoint {
+    x: f64,
+    y: f64,
+}
+
+// lopdf 0.34 uses Object::Real(f32) — this wrapper casts for us
+#[inline]
+fn rf(v: f64) -> lopdf::Object {
+    lopdf::Object::Real(v as f32)
+}
+
+fn highlight_color_pdf(key: &str) -> (f64, f64, f64) {
+    // Keep in sync with src/constants/highlights.ts
+    match key {
+        "yellow" => (1.0, 0.839, 0.039),   // #FFD60A
+        "blue"   => (0.302, 0.651, 1.0),    // #4DA6FF
+        "green"  => (0.204, 0.780, 0.349),  // #34C759
+        "pink"   => (1.0, 0.420, 0.616),    // #FF6B9D
+        _        => (1.0, 1.0, 0.0),
+    }
+}
+
+fn hex_to_pdf_color(hex: &str) -> (f64, f64, f64) {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return (1.0, 1.0, 1.0);
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255) as f64 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255) as f64 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255) as f64 / 255.0;
+    (r, g, b)
+}
+
+fn get_page_existing_annots(doc: &lopdf::Document, page_id: lopdf::ObjectId) -> Vec<lopdf::Object> {
+    let page_dict = match doc.objects.get(&page_id) {
+        Some(lopdf::Object::Dictionary(d)) => d,
+        _ => return vec![],
+    };
+    match page_dict.get(b"Annots") {
+        Ok(lopdf::Object::Array(arr)) => arr.clone(),
+        Ok(lopdf::Object::Reference(ref_id)) => {
+            let ref_id = *ref_id;
+            match doc.objects.get(&ref_id) {
+                Some(lopdf::Object::Array(arr)) => arr.clone(),
+                _ => vec![],
+            }
+        }
+        _ => vec![],
+    }
+}
+
+fn add_highlight_annot(doc: &mut lopdf::Document, hl: &Highlight) -> lopdf::ObjectId {
+    let rects: Vec<HlRect> = match &hl.rects {
+        Some(r) if !r.is_empty() => r.clone(),
+        _ => vec![HlRect {
+            x: hl.position_x,
+            y: hl.position_y,
+            w: hl.position_w,
+            h: hl.position_h,
+        }],
+    };
+
+    let min_x = rects.iter().map(|r| r.x).fold(f64::INFINITY, f64::min);
+    let min_y = rects.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
+    let max_x = rects.iter().map(|r| r.x + r.w).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = rects.iter().map(|r| r.y + r.h).fold(f64::NEG_INFINITY, f64::max);
+
+    let (cr, cg, cb) = highlight_color_pdf(&hl.color);
+
+    // QuadPoints: 8 values per rect — upper-left, upper-right, lower-left, lower-right
+    let mut quad_pts: Vec<lopdf::Object> = Vec::with_capacity(rects.len() * 8);
+    for r in &rects {
+        quad_pts.push(rf(r.x));
+        quad_pts.push(rf(r.y + r.h));
+        quad_pts.push(rf(r.x + r.w));
+        quad_pts.push(rf(r.y + r.h));
+        quad_pts.push(rf(r.x));
+        quad_pts.push(rf(r.y));
+        quad_pts.push(rf(r.x + r.w));
+        quad_pts.push(rf(r.y));
+    }
+
+    let mut dict = lopdf::Dictionary::new();
+    dict.set(b"Type".to_vec(),       lopdf::Object::Name(b"Annot".to_vec()));
+    dict.set(b"Subtype".to_vec(),    lopdf::Object::Name(b"Highlight".to_vec()));
+    dict.set(b"Rect".to_vec(),       lopdf::Object::Array(vec![rf(min_x), rf(min_y), rf(max_x), rf(max_y)]));
+    dict.set(b"QuadPoints".to_vec(), lopdf::Object::Array(quad_pts));
+    dict.set(b"C".to_vec(),          lopdf::Object::Array(vec![rf(cr), rf(cg), rf(cb)]));
+    dict.set(b"CA".to_vec(),         lopdf::Object::Real(0.4_f32));
+    dict.set(b"F".to_vec(),          lopdf::Object::Integer(4));
+
+    doc.add_object(lopdf::Object::Dictionary(dict))
+}
+
+fn make_bs_dict(stroke_width: f64) -> lopdf::Dictionary {
+    let mut bs = lopdf::Dictionary::new();
+    bs.set(b"Type".to_vec(), lopdf::Object::Name(b"Border".to_vec()));
+    bs.set(b"S".to_vec(),    lopdf::Object::Name(b"S".to_vec()));
+    bs.set(b"W".to_vec(),    lopdf::Object::Real(stroke_width as f32));
+    bs
+}
+
+fn add_drawing_annot(doc: &mut lopdf::Document, drawing: &Drawing) -> Option<lopdf::ObjectId> {
+    let points: Vec<ExportDrawPoint> = serde_json::from_str(&drawing.points).ok()?;
+    if points.is_empty() {
+        return None;
+    }
+    let (cr, cg, cb) = hex_to_pdf_color(&drawing.color);
+    let sw = drawing.stroke_width;
+    let bs = make_bs_dict(sw);
+    let color_arr = lopdf::Object::Array(vec![rf(cr), rf(cg), rf(cb)]);
+
+    let annot_id = match drawing.tool_type.as_str() {
+        "pen" => {
+            let min_x = points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+            let min_y = points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+            let max_x = points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+            let max_y = points.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+
+            let ink_stroke: Vec<lopdf::Object> = points
+                .iter()
+                .flat_map(|p| [rf(p.x), rf(p.y)])
+                .collect();
+
+            let mut dict = lopdf::Dictionary::new();
+            dict.set(b"Type".to_vec(),    lopdf::Object::Name(b"Annot".to_vec()));
+            dict.set(b"Subtype".to_vec(), lopdf::Object::Name(b"Ink".to_vec()));
+            dict.set(b"Rect".to_vec(),    lopdf::Object::Array(vec![
+                rf(min_x - sw), rf(min_y - sw), rf(max_x + sw), rf(max_y + sw),
+            ]));
+            dict.set(b"InkList".to_vec(), lopdf::Object::Array(vec![
+                lopdf::Object::Array(ink_stroke),
+            ]));
+            dict.set(b"C".to_vec(),  color_arr);
+            dict.set(b"BS".to_vec(), lopdf::Object::Dictionary(bs));
+            dict.set(b"F".to_vec(),  lopdf::Object::Integer(4));
+            doc.add_object(lopdf::Object::Dictionary(dict))
+        }
+        "arrow" => {
+            let p0 = &points[0];
+            let p1 = &points[points.len() - 1];
+            let pad = sw * 5.0;
+
+            let mut dict = lopdf::Dictionary::new();
+            dict.set(b"Type".to_vec(),    lopdf::Object::Name(b"Annot".to_vec()));
+            dict.set(b"Subtype".to_vec(), lopdf::Object::Name(b"Line".to_vec()));
+            dict.set(b"Rect".to_vec(),    lopdf::Object::Array(vec![
+                rf(p0.x.min(p1.x) - pad), rf(p0.y.min(p1.y) - pad),
+                rf(p0.x.max(p1.x) + pad), rf(p0.y.max(p1.y) + pad),
+            ]));
+            dict.set(b"L".to_vec(), lopdf::Object::Array(vec![
+                rf(p0.x), rf(p0.y), rf(p1.x), rf(p1.y),
+            ]));
+            dict.set(b"LE".to_vec(), lopdf::Object::Array(vec![
+                lopdf::Object::Name(b"None".to_vec()),
+                lopdf::Object::Name(b"OpenArrow".to_vec()),
+            ]));
+            dict.set(b"C".to_vec(),  color_arr);
+            dict.set(b"BS".to_vec(), lopdf::Object::Dictionary(bs));
+            dict.set(b"F".to_vec(),  lopdf::Object::Integer(4));
+            doc.add_object(lopdf::Object::Dictionary(dict))
+        }
+        "rectangle" => {
+            let p0 = &points[0];
+            let p1 = &points[points.len() - 1];
+
+            let mut dict = lopdf::Dictionary::new();
+            dict.set(b"Type".to_vec(),    lopdf::Object::Name(b"Annot".to_vec()));
+            dict.set(b"Subtype".to_vec(), lopdf::Object::Name(b"Square".to_vec()));
+            dict.set(b"Rect".to_vec(),    lopdf::Object::Array(vec![
+                rf(p0.x.min(p1.x)), rf(p0.y.min(p1.y)),
+                rf(p0.x.max(p1.x)), rf(p0.y.max(p1.y)),
+            ]));
+            dict.set(b"C".to_vec(),  color_arr);
+            dict.set(b"BS".to_vec(), lopdf::Object::Dictionary(bs));
+            dict.set(b"F".to_vec(),  lopdf::Object::Integer(4));
+            doc.add_object(lopdf::Object::Dictionary(dict))
+        }
+        "circle" => {
+            let p0 = &points[0];
+            let p1 = &points[points.len() - 1];
+
+            let mut dict = lopdf::Dictionary::new();
+            dict.set(b"Type".to_vec(),    lopdf::Object::Name(b"Annot".to_vec()));
+            dict.set(b"Subtype".to_vec(), lopdf::Object::Name(b"Circle".to_vec()));
+            dict.set(b"Rect".to_vec(),    lopdf::Object::Array(vec![
+                rf(p0.x.min(p1.x)), rf(p0.y.min(p1.y)),
+                rf(p0.x.max(p1.x)), rf(p0.y.max(p1.y)),
+            ]));
+            dict.set(b"C".to_vec(),  color_arr);
+            dict.set(b"BS".to_vec(), lopdf::Object::Dictionary(bs));
+            dict.set(b"F".to_vec(),  lopdf::Object::Integer(4));
+            doc.add_object(lopdf::Object::Dictionary(dict))
+        }
+        _ => return None,
+    };
+
+    Some(annot_id)
+}
+
+// Escape a string for use inside a PDF literal string (parentheses).
+fn pdf_escape_text(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        match ch {
+            '(' => out.push_str("\\("),
+            ')' => out.push_str("\\)"),
+            '\\' => out.push_str("\\\\"),
+            c if c as u32 >= 0x20 && c as u32 <= 0x7E => out.push(c),
+            c if c as u32 >= 0xA0 && c as u32 <= 0xFF => {
+                // Latin-1 supplement: octal-escape for WinAnsiEncoding
+                out.push_str(&format!("\\{:03o}", c as u32));
+            }
+            _ => {} // skip control chars / non-Latin-1
+        }
+    }
+    out
+}
+
+// Build PDF content stream bytes that draw all text boxes for one page.
+// Uses BT/ET text operators so the text is permanently visible (not interactive).
+fn build_text_box_content(tbs: &[&TextBox]) -> Vec<u8> {
+    let mut content: Vec<u8> = Vec::new();
+    for tb in tbs {
+        if tb.content.is_empty() {
+            continue;
+        }
+        let (cr, cg, cb) = hex_to_pdf_color(&tb.color);
+        let font_size = tb.font_size;
+        let line_height = font_size * 1.3;
+        // First text baseline sits near the top of the box (cap-height approximation).
+        let first_y = tb.position_y + tb.height - font_size * 0.85;
+        let first_x = tb.position_x + 2.0;
+        let lines: Vec<&str> = tb.content.lines().collect();
+        let header = format!(
+            "q\nBT\n/Helv {:.1} Tf\n{:.4} {:.4} {:.4} rg\n{:.4} {:.4} Td\n",
+            font_size, cr, cg, cb, first_x, first_y
+        );
+        content.extend_from_slice(header.as_bytes());
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                content.extend_from_slice(
+                    format!("0 {:.4} Td\n", -line_height).as_bytes(),
+                );
+            }
+            content.extend_from_slice(
+                format!("({}) Tj\n", pdf_escape_text(line)).as_bytes(),
+            );
+        }
+        content.extend_from_slice(b"ET\nQ\n");
+    }
+    content
+}
+
+// Walk the page tree upward to find and clone the /Resources dict.
+// Handles both inline dicts and indirect references, plus inherited resources.
+fn get_page_resources_cloned(
+    doc: &lopdf::Document,
+    page_id: lopdf::ObjectId,
+) -> lopdf::Dictionary {
+    let mut id = page_id;
+    loop {
+        match doc.objects.get(&id) {
+            Some(lopdf::Object::Dictionary(d)) => {
+                match d.get(b"Resources") {
+                    Ok(lopdf::Object::Dictionary(r)) => return r.clone(),
+                    Ok(lopdf::Object::Reference(r)) => {
+                        let rid = *r;
+                        if let Some(lopdf::Object::Dictionary(rd)) = doc.objects.get(&rid) {
+                            return rd.clone();
+                        }
+                    }
+                    _ => {}
+                }
+                match d.get(b"Parent") {
+                    Ok(lopdf::Object::Reference(p)) => id = *p,
+                    _ => return lopdf::Dictionary::new(),
+                }
+            }
+            _ => return lopdf::Dictionary::new(),
+        }
+    }
+}
+
+// Flatten text boxes for one page directly into the page content stream.
+// Appends a new stream with PDF text operators and declares /Helv in /Resources/Font.
+fn flatten_text_boxes_to_page(
+    doc: &mut lopdf::Document,
+    page_id: lopdf::ObjectId,
+    tbs: &[&TextBox],
+) {
+    let content_bytes = build_text_box_content(tbs);
+    if content_bytes.is_empty() {
+        return;
+    }
+
+    // Clone page resources (resolves inheritance) — borrow ends before any mutation below.
+    let mut resources = get_page_resources_cloned(doc, page_id);
+
+    // Build the Helvetica Type1 font entry and merge it into /Resources/Font.
+    let mut helv_dict = lopdf::Dictionary::new();
+    helv_dict.set(b"Type".to_vec(), lopdf::Object::Name(b"Font".to_vec()));
+    helv_dict.set(b"Subtype".to_vec(), lopdf::Object::Name(b"Type1".to_vec()));
+    helv_dict.set(b"BaseFont".to_vec(), lopdf::Object::Name(b"Helvetica".to_vec()));
+    helv_dict.set(b"Encoding".to_vec(), lopdf::Object::Name(b"WinAnsiEncoding".to_vec()));
+
+    let mut font_dict: lopdf::Dictionary = match resources.get(b"Font") {
+        Ok(lopdf::Object::Dictionary(fd)) => fd.clone(),
+        Ok(lopdf::Object::Reference(r)) => {
+            let rid = *r;
+            match doc.objects.get(&rid) {
+                Some(lopdf::Object::Dictionary(fd)) => fd.clone(),
+                _ => lopdf::Dictionary::new(),
+            }
+        }
+        _ => lopdf::Dictionary::new(),
+    };
+    font_dict.set(b"Helv".to_vec(), lopdf::Object::Dictionary(helv_dict));
+    resources.set(b"Font".to_vec(), lopdf::Object::Dictionary(font_dict));
+
+    // Add the text content as a new indirect stream object.
+    let mut stream_dict = lopdf::Dictionary::new();
+    stream_dict.set(
+        b"Length".to_vec(),
+        lopdf::Object::Integer(content_bytes.len() as i64),
+    );
+    let stream_id = doc.add_object(lopdf::Object::Stream(lopdf::Stream::new(
+        stream_dict,
+        content_bytes,
+    )));
+
+    // Clone existing /Contents refs before taking the mutable borrow below.
+    let existing: Vec<lopdf::Object> = match doc.objects.get(&page_id) {
+        Some(lopdf::Object::Dictionary(pd)) => match pd.get(b"Contents") {
+            Ok(lopdf::Object::Reference(r)) => vec![lopdf::Object::Reference(*r)],
+            Ok(lopdf::Object::Array(arr)) => arr.clone(),
+            _ => vec![],
+        },
+        _ => return,
+    };
+
+    let mut new_contents = existing;
+    new_contents.push(lopdf::Object::Reference(stream_id));
+
+    // Write updated Resources + Contents back to the page dict in one pass.
+    if let Some(lopdf::Object::Dictionary(ref mut pd)) = doc.objects.get_mut(&page_id) {
+        pd.set(b"Resources".to_vec(), lopdf::Object::Dictionary(resources));
+        pd.set(b"Contents".to_vec(), lopdf::Object::Array(new_contents));
+    }
+}
+
+#[tauri::command]
+pub fn export_annotated_pdf(
+    app: AppHandle,
+    pdf_id: String,
+    include_highlights: bool,
+    include_drawings: bool,
+    include_text_boxes: bool,
+) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let db = db_path(&app)?;
+    let conn = Connection::open(&db).map_err(|e| e.to_string())?;
+
+    // Load PDF record
+    let (filepath, filename): (String, String) = conn
+        .query_row(
+            "SELECT filepath, filename FROM pdfs WHERE id = ?1",
+            rusqlite::params![pdf_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Build default output filename from stem
+    let stem = std::path::Path::new(&filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document");
+    let default_name = format!("{}-annotated.pdf", stem);
+
+    // Open native save dialog
+    let save_fp = app
+        .dialog()
+        .file()
+        .add_filter("PDF Files", &["pdf"])
+        .set_file_name(&default_name)
+        .blocking_save_file();
+
+    let output_path = match save_fp {
+        Some(fp) => fp.to_string(),
+        None => return Ok(String::new()), // user cancelled
+    };
+
+    // Load annotations from DB — collect before stmt drops to satisfy borrow checker
+    let highlights: Vec<Highlight> = if include_highlights {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, pdf_id, page, color, selected_text,
+                        position_x, position_y, position_w, position_h,
+                        note, created_at, rects
+                 FROM highlights WHERE pdf_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let v: Vec<Highlight> = stmt
+            .query_map(rusqlite::params![pdf_id], |row| {
+                let rects_str: Option<String> = row.get(11)?;
+                Ok(Highlight {
+                    id: row.get(0)?,
+                    pdf_id: row.get(1)?,
+                    page: row.get(2)?,
+                    color: row.get(3)?,
+                    selected_text: row.get(4)?,
+                    position_x: row.get(5)?,
+                    position_y: row.get(6)?,
+                    position_w: row.get(7)?,
+                    position_h: row.get(8)?,
+                    note: row.get(9)?,
+                    created_at: row.get(10)?,
+                    rects: rects_str.and_then(|s| serde_json::from_str(&s).ok()),
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        v
+    } else {
+        vec![]
+    };
+
+    let drawings: Vec<Drawing> = if include_drawings {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, pdf_id, page, tool_type, color, stroke_width, points, created_at
+                 FROM drawings WHERE pdf_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let v: Vec<Drawing> = stmt
+            .query_map(rusqlite::params![pdf_id], |row| {
+                Ok(Drawing {
+                    id:           row.get(0)?,
+                    pdf_id:       row.get(1)?,
+                    page:         row.get(2)?,
+                    tool_type:    row.get(3)?,
+                    color:        row.get(4)?,
+                    stroke_width: row.get(5)?,
+                    points:       row.get(6)?,
+                    created_at:   row.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        v
+    } else {
+        vec![]
+    };
+
+    let text_boxes: Vec<TextBox> = if include_text_boxes {
+        let mut stmt = conn
+            .prepare(&format!("{TB_SELECT} WHERE pdf_id = ?1"))
+            .map_err(|e| e.to_string())?;
+        let v: Vec<TextBox> = stmt
+            .query_map(rusqlite::params![pdf_id], row_to_text_box)
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        v
+    } else {
+        vec![]
+    };
+
+    // Load source PDF
+    let mut doc = lopdf::Document::load(&filepath).map_err(|e| e.to_string())?;
+
+    // Stamp annotations page by page
+    let pages = doc.get_pages();
+    for (page_num, page_id) in pages {
+        let page_num_i64 = page_num as i64;
+        let mut new_annot_ids: Vec<lopdf::ObjectId> = Vec::new();
+
+        for hl in highlights.iter().filter(|h| h.page == page_num_i64) {
+            new_annot_ids.push(add_highlight_annot(&mut doc, hl));
+        }
+        for drawing in drawings.iter().filter(|d| d.page == page_num_i64) {
+            if let Some(id) = add_drawing_annot(&mut doc, drawing) {
+                new_annot_ids.push(id);
+            }
+        }
+        if !new_annot_ids.is_empty() {
+            let mut annots = get_page_existing_annots(&doc, page_id);
+            for id in new_annot_ids {
+                annots.push(lopdf::Object::Reference(id));
+            }
+            if let Some(lopdf::Object::Dictionary(ref mut page_dict)) =
+                doc.objects.get_mut(&page_id)
+            {
+                page_dict.set(b"Annots".to_vec(), lopdf::Object::Array(annots));
+            }
+        }
+
+        // Text boxes are flattened into the page content stream (not annotation objects)
+        // so they render as permanent visible text in all standard PDF viewers.
+        let page_tbs: Vec<&TextBox> = text_boxes
+            .iter()
+            .filter(|t| t.page == page_num_i64)
+            .collect();
+        if !page_tbs.is_empty() {
+            flatten_text_boxes_to_page(&mut doc, page_id, &page_tbs);
+        }
+    }
+
+    // Write to output path (original file is never modified)
+    doc.save(&output_path).map_err(|e| e.to_string())?;
+
+    Ok(output_path)
+}
+
+#[tauri::command]
+pub fn reveal_in_folder(path: String) -> Result<(), String> {
+    reveal_path(&path).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path(path: &str) -> std::io::Result<()> {
+    std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path))
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path(path: &str) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .args(["-R", path])
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+fn reveal_path(path: &str) -> std::io::Result<()> {
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("/"))
+        .to_string_lossy()
+        .into_owned();
+    std::process::Command::new("xdg-open").arg(&dir).spawn().map(|_| ())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn reveal_path(_path: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "unsupported OS"))
 }
 
 // ── Context retrieval ─────────────────────────────────────────────────────────

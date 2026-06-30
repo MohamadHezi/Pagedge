@@ -1,12 +1,14 @@
 pub mod commands;
 
 use commands::{
-    add_drawing, add_highlight, add_pdf, add_text_box, create_dir_if_not_exists, create_note,
-    delete_chunks_for_pdf, delete_drawing, delete_highlight, delete_note, delete_pdf,
-    delete_text_box, extract_pdf_text, get_all_chunks, get_app_data_dir, get_chunks_for_pdf,
-    get_drawings, get_highlights, get_notes, get_pdfs, get_setting, get_text_boxes,
-    open_file_dialog, read_file, rename_pdf, set_setting, store_chunks, update_drawing_points,
-    update_last_opened, update_note, update_pdf_ingestion_status, update_text_box,
+    add_drawing, add_flashcard, add_highlight, add_pdf, add_text_box, create_dir_if_not_exists,
+    create_note, delete_chunks_for_pdf, delete_drawing, delete_flashcard, delete_highlight,
+    delete_note, delete_pdf, delete_text_box, export_annotated_pdf, extract_pdf_text,
+    get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
+    get_flashcards, get_highlights, get_notes, get_pdfs, get_setting, get_text_boxes,
+    open_file_dialog, read_file, rename_pdf, reveal_in_folder, set_setting, store_chunks,
+    update_drawing_points, update_flashcard_review, update_last_opened, update_note,
+    update_pdf_ingestion_status, update_text_box,
 };
 use tauri::Manager;
 
@@ -120,7 +122,26 @@ pub fn run() {
                     FOREIGN KEY (pdf_id) REFERENCES pdfs(id)
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_text_boxes_pdf ON text_boxes(pdf_id, page);",
+                CREATE INDEX IF NOT EXISTS idx_text_boxes_pdf ON text_boxes(pdf_id, page);
+
+                CREATE TABLE IF NOT EXISTS flashcards (
+                    id                  TEXT PRIMARY KEY,
+                    source_highlight_id TEXT NOT NULL,
+                    pdf_id              TEXT NOT NULL,
+                    page                INTEGER NOT NULL,
+                    front               TEXT NOT NULL,
+                    back                TEXT NOT NULL,
+                    interval            REAL NOT NULL DEFAULT 0,
+                    ease_factor         REAL NOT NULL DEFAULT 2.5,
+                    repetitions         INTEGER NOT NULL DEFAULT 0,
+                    next_review         TEXT NOT NULL,
+                    created_at          TEXT NOT NULL,
+                    FOREIGN KEY (pdf_id) REFERENCES pdfs(id),
+                    FOREIGN KEY (source_highlight_id) REFERENCES highlights(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_flashcards_pdf ON flashcards(pdf_id);
+                CREATE INDEX IF NOT EXISTS idx_flashcards_review ON flashcards(next_review);",
             )
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
@@ -255,6 +276,13 @@ pub fn run() {
             get_text_boxes,
             update_text_box,
             delete_text_box,
+            add_flashcard,
+            get_flashcards,
+            get_all_flashcards,
+            delete_flashcard,
+            update_flashcard_review,
+            export_annotated_pdf,
+            reveal_in_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

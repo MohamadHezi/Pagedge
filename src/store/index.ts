@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox } from "../types";
+import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 
 interface AppState {
@@ -70,6 +70,10 @@ interface AppState {
   // ── Search ────────────────────────────────────────────────────────────────────
   searchModalOpen: boolean;
   setSearchModalOpen: (open: boolean) => void;
+
+  // ── Export ────────────────────────────────────────────────────────────────────
+  exportDialogOpen: boolean;
+  setExportDialogOpen: (open: boolean) => void;
   pendingJumpPage: number | null;
   setPendingJumpPage: (page: number | null) => void;
 
@@ -118,6 +122,23 @@ interface AppState {
   // Which box should auto-focus on mount (set when a box is freshly created)
   editingTextBoxId: string | null;
   setEditingTextBoxId: (id: string | null) => void;
+
+  // ── Flashcards ───────────────────────────────────────────────────────────────
+  flashcards: Flashcard[];
+  loadFlashcards: (pdfId: string) => Promise<void>;
+  addFlashcard: (f: Flashcard) => void;
+  removeFlashcard: (id: string) => void;
+  updateFlashcardLocal: (id: string, changes: Partial<Flashcard>) => void;
+  reviewQueue: Flashcard[];
+  currentReviewIndex: number;
+  reviewModeOpen: boolean;
+  setReviewModeOpen: (open: boolean) => void;
+  startReview: (queue: Flashcard[]) => void;
+  advanceReview: () => void;
+  isGeneratingFlashcards: boolean;
+  setIsGeneratingFlashcards: (b: boolean) => void;
+  generationProgress: { done: number; total: number } | null;
+  setGenerationProgress: (p: { done: number; total: number } | null) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -161,7 +182,7 @@ export const useStore = create<AppState>((set) => ({
       ),
     })),
 
-  selectPdf: (id) => set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null }),
+  selectPdf: (id) => set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [] }),
 
   loadPdfs: async () => {
     const json = await invoke<string>("get_pdfs");
@@ -278,6 +299,10 @@ export const useStore = create<AppState>((set) => ({
   // ── Search ────────────────────────────────────────────────────────────────────
   searchModalOpen: false,
   setSearchModalOpen: (open) => set({ searchModalOpen: open }),
+
+  // ── Export ────────────────────────────────────────────────────────────────────
+  exportDialogOpen: false,
+  setExportDialogOpen: (open) => set({ exportDialogOpen: open }),
   pendingJumpPage: null,
   setPendingJumpPage: (page) => set({ pendingJumpPage: page }),
 
@@ -350,4 +375,37 @@ export const useStore = create<AppState>((set) => ({
   setPlacingTextBox: (on) => set({ placingTextBox: on }),
   editingTextBoxId: null,
   setEditingTextBoxId: (id) => set({ editingTextBoxId: id }),
+
+  // ── Flashcards ───────────────────────────────────────────────────────────────
+  flashcards: [],
+
+  loadFlashcards: async (pdfId: string) => {
+    const json = await invoke<string>('get_flashcards', { pdfId });
+    set({ flashcards: JSON.parse(json) });
+  },
+
+  addFlashcard: (f: Flashcard) =>
+    set((state) => ({ flashcards: [...state.flashcards, f] })),
+
+  removeFlashcard: (id: string) =>
+    set((state) => ({ flashcards: state.flashcards.filter((f) => f.id !== id) })),
+
+  updateFlashcardLocal: (id: string, changes: Partial<Flashcard>) =>
+    set((state) => ({
+      flashcards: state.flashcards.map((f) => (f.id === id ? { ...f, ...changes } : f)),
+    })),
+
+  reviewQueue: [],
+  currentReviewIndex: 0,
+  reviewModeOpen: false,
+  setReviewModeOpen: (open) => set({ reviewModeOpen: open }),
+
+  startReview: (queue) => set({ reviewQueue: queue, currentReviewIndex: 0, reviewModeOpen: true }),
+
+  advanceReview: () => set((state) => ({ currentReviewIndex: state.currentReviewIndex + 1 })),
+
+  isGeneratingFlashcards: false,
+  setIsGeneratingFlashcards: (b) => set({ isGeneratingFlashcards: b }),
+  generationProgress: null,
+  setGenerationProgress: (p) => set({ generationProgress: p }),
 }));

@@ -6,6 +6,8 @@ import { RightPanel } from "./components/RightPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SummaryPanel } from "./components/SummaryPanel";
 import { SearchModal } from "./components/SearchModal";
+import { ExportDialog } from "./components/ExportDialog";
+import { ReviewMode } from "./components/ReviewMode";
 import { useStore } from "./store";
 import "./App.css";
 
@@ -40,6 +42,8 @@ function App() {
       <SettingsPanel />
       <SummaryPanel />
       <SearchModal />
+      <ExportDialog />
+      <ReviewMode />
     </div>
   );
 }
