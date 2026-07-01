@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState, useRef } from "react";
+import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { IconRail } from "./components/IconRail";
 import { LibrarySidebar } from "./components/LibrarySidebar";
 import { MainArea } from "./components/MainArea";
@@ -9,6 +10,7 @@ import { SearchModal } from "./components/SearchModal";
 import { ExportDialog } from "./components/ExportDialog";
 import { ReviewMode } from "./components/ReviewMode";
 import { AuthModal } from "./components/AuthModal";
+import { PaywallModal } from "./components/PaywallModal";
 import { useStore } from "./store";
 import { checkForUpdates } from "./services/updateService";
 import "./App.css";
@@ -17,7 +19,16 @@ function App() {
   const {
     loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen,
     initAuth, isAuthenticated, authLoading,
+    refreshUserFromMe, closePaywall,
   } = useStore();
+
+  const [appToast, setAppToast] = useState<string | null>(null);
+  const appToastTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const showAppToast = (msg: string) => {
+    clearTimeout(appToastTimerRef.current);
+    setAppToast(msg);
+    appToastTimerRef.current = setTimeout(() => setAppToast(null), 3500);
+  };
 
   useEffect(() => {
     loadPdfs().catch(console.error);
@@ -25,6 +36,24 @@ function App() {
     initAuth();
     checkForUpdates();
   }, [loadPdfs, loadAiSettings, initAuth]);
+
+  // pagedge://stripe-success / pagedge://stripe-cancel — fired when Stripe
+  // Checkout / the billing portal redirects back to the desktop app.
+  useEffect(() => {
+    const unlistenPromise = onOpenUrl((urls) => {
+      const url = urls[0];
+      if (!url) return;
+      if (url.startsWith('pagedge://stripe-success')) {
+        refreshUserFromMe().then(() => {
+          showAppToast('Welcome to Pro! Unlimited AI is now active.');
+          closePaywall();
+        });
+      } else if (url.startsWith('pagedge://stripe-cancel')) {
+        showAppToast("No worries — you're still on the free plan.");
+      }
+    });
+    return () => { unlistenPromise.then((unlisten) => unlisten()); };
+  }, [refreshUserFromMe, closePaywall]);
 
   // Ctrl+K / Cmd+K global shortcut to open search
   useEffect(() => {
@@ -63,6 +92,8 @@ function App() {
       <SearchModal />
       <ExportDialog />
       <ReviewMode />
+      <PaywallModal />
+      {appToast && <div className="app-toast">{appToast}</div>}
     </div>
   );
 }

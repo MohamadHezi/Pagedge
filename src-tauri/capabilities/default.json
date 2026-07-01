@@ -13,6 +13,8 @@
     "fs:allow-mkdir",
     "updater:default",
     "process:allow-restart",
-    "store:default"
+    "store:default",
+    "deep-link:default",
+    "shell:allow-open"
   ]
 }

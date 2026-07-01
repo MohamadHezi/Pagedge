@@ -2,7 +2,7 @@ import { load, Store } from '@tauri-apps/plugin-store';
 
 // Override with VITE_PAGEDGE_API_URL for local backend dev
 // (e.g. http://localhost:3000/api).
-const API_BASE_URL = import.meta.env.VITE_PAGEDGE_API_URL || 'https://pagedge-backend.vercel.app/api';
+export const API_BASE_URL = import.meta.env.VITE_PAGEDGE_API_URL || 'https://pagedge-backend.vercel.app/api';
 
 export interface StoredSession {
   access_token: string;
@@ -18,6 +18,7 @@ export interface MeResponse {
   tier: 'free' | 'pro';
   ai_calls_this_month: number;
   calls_remaining: number | null;
+  ai_calls_reset_at: string;
 }
 
 export class AuthApiError extends Error {

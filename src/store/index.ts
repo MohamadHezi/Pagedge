@@ -2,14 +2,17 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
-import { resolveSession, signOut as signOutApi } from "../services/authService";
+import { resolveSession, signOut as signOutApi, loadSession, getMe } from "../services/authService";
 
 export interface AuthUser {
   id: string;
   email: string;
   tier: 'free' | 'pro';
   callsRemaining: number | null;
+  resetAt: string | null;
 }
+
+export type PaywallReason = 'context_too_large' | 'quota_exceeded';
 
 interface AppState {
   // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -20,6 +23,13 @@ interface AppState {
   clearUser: () => void;
   initAuth: () => Promise<void>;
   signOut: () => Promise<void>;
+  refreshUserFromMe: () => Promise<void>;
+
+  // ── Paywall ───────────────────────────────────────────────────────────────────
+  paywallOpen: boolean;
+  paywallReason: PaywallReason | null;
+  showPaywall: (reason: PaywallReason) => void;
+  closePaywall: () => void;
 
   // ── PDFs ────────────────────────────────────────────────────────────────────
   pdfs: Pdf[];
@@ -70,7 +80,11 @@ interface AppState {
   aiModel: string;
   aiBaseUrl: string;
   aiApiKey: string;
-  setAiSettings: (s: Partial<{ aiProvider: string; aiModel: string; aiBaseUrl: string; aiApiKey: string }>) => void;
+  // When false (default), AI calls route through the Pagedge backend proxy
+  // (Gemini, quota-enforced). When true, calls go directly to the
+  // provider/baseUrl/apiKey configured below, bypassing the proxy entirely.
+  aiUseCustomProvider: boolean;
+  setAiSettings: (s: Partial<{ aiProvider: string; aiModel: string; aiBaseUrl: string; aiApiKey: string; aiUseCustomProvider: boolean }>) => void;
   loadAiSettings: () => Promise<void>;
 
   // ── Chat ──────────────────────────────────────────────────────────────────────
@@ -206,7 +220,7 @@ export const useStore = create<AppState>((set) => ({
       }
       const { me } = resolved;
       set({
-        user: { id: me.user_id, email: me.email, tier: me.tier, callsRemaining: me.calls_remaining },
+        user: { id: me.user_id, email: me.email, tier: me.tier, callsRemaining: me.calls_remaining, resetAt: me.ai_calls_reset_at },
         isAuthenticated: true,
       });
     } catch (err) {
@@ -221,6 +235,28 @@ export const useStore = create<AppState>((set) => ({
     await signOutApi();
     set({ user: null, isAuthenticated: false });
   },
+
+  // Re-fetches /auth/me and updates the user's tier/quota — used after a
+  // Stripe checkout deep link comes back so the UI reflects the new tier
+  // without a full app restart.
+  refreshUserFromMe: async () => {
+    const session = await loadSession();
+    if (!session) return;
+    try {
+      const me = await getMe(session.access_token);
+      set({
+        user: { id: me.user_id, email: me.email, tier: me.tier, callsRemaining: me.calls_remaining, resetAt: me.ai_calls_reset_at },
+      });
+    } catch (err) {
+      console.error('Failed to refresh user from /auth/me:', err);
+    }
+  },
+
+  // ── Paywall ───────────────────────────────────────────────────────────────────
+  paywallOpen: false,
+  paywallReason: null,
+  showPaywall: (reason) => set({ paywallOpen: true, paywallReason: reason }),
+  closePaywall: () => set({ paywallOpen: false, paywallReason: null }),
 
   // ── PDFs ────────────────────────────────────────────────────────────────────
   pdfs: [],
@@ -343,22 +379,25 @@ export const useStore = create<AppState>((set) => ({
   aiModel: 'llama3.2',
   aiBaseUrl: 'http://localhost:11434/v1',
   aiApiKey: '',
+  aiUseCustomProvider: false,
 
   setAiSettings: (s) => set((state) => ({ ...state, ...s })),
 
   loadAiSettings: async () => {
     try {
-      const [provider, model, baseUrl, apiKey] = await Promise.all([
+      const [provider, model, baseUrl, apiKey, useCustomProvider] = await Promise.all([
         invoke<string>('get_setting', { key: 'ai_provider' }),
         invoke<string>('get_setting', { key: 'ai_model' }),
         invoke<string>('get_setting', { key: 'ai_base_url' }),
         invoke<string>('get_setting', { key: 'ai_api_key' }),
+        invoke<string>('get_setting', { key: 'ai_use_custom_provider' }),
       ]);
       set({
         aiProvider: provider || 'ollama',
         aiModel: model || 'llama3.2',
         aiBaseUrl: baseUrl || 'http://localhost:11434/v1',
         aiApiKey: apiKey || '',
+        aiUseCustomProvider: useCustomProvider === 'true',
       });
     } catch (err) {
       console.error('Failed to load AI settings:', err);

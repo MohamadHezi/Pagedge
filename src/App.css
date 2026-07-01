@@ -1918,6 +1918,13 @@
   gap: 5px;
 }
 
+.settings-field--row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-field--row .settings-label { text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+
 .settings-label {
   font-size: 11px;
   font-weight: 500;
@@ -2086,6 +2093,62 @@
   color: var(--text-muted);
   line-height: 1.5;
   margin-top: 18px;
+}
+
+/* ── Paywall modal ── */
+.paywall-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.paywall-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  width: 380px;
+  padding: 24px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.paywall-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.paywall-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.paywall-reset-note {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: -6px 0 0;
+}
+
+.paywall-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.paywall-upgrade-btn {
+  width: 100%;
+  text-align: center;
+  padding: 10px 16px;
 }
 
 /* ── Explain panel ── */
@@ -2507,6 +2570,22 @@
 
 .flash-gen-toast-btn:hover {
   background: var(--accent-bright);
+}
+
+.app-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  background: rgba(19, 13, 6, 0.95);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 10px 18px;
+  white-space: nowrap;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
 }
 
 /* ── Search modal ── */

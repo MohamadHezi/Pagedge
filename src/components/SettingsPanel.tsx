@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { useStore } from '../store';
+import { startProCheckout, openBillingPortal } from '../services/stripeService';
 
 const PROVIDER_URLS: Record<string, string> = {
   ollama:      'http://localhost:11434/v1',
@@ -28,7 +29,7 @@ const FREE_TIER_MONTHLY_CALLS = 30;
 export function SettingsPanel() {
   const {
     settingsPanelOpen, setSettingsPanelOpen,
-    aiProvider, aiModel, aiBaseUrl, aiApiKey,
+    aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
     user, signOut,
   } = useStore();
@@ -37,10 +38,13 @@ export function SettingsPanel() {
   const [model, setModel]       = useState(aiModel);
   const [baseUrl, setBaseUrl]   = useState(aiBaseUrl);
   const [apiKey, setApiKey]     = useState(aiApiKey);
+  const [useCustomProvider, setUseCustomProvider] = useState(aiUseCustomProvider);
   const [testState, setTestState] = useState<TestState>('idle');
   const [testError, setTestError] = useState('');
   const [saving, setSaving]     = useState(false);
   const [appVersion, setAppVersion] = useState('');
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [billingError, setBillingError] = useState('');
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(console.error);
@@ -52,9 +56,10 @@ export function SettingsPanel() {
     setModel(aiModel);
     setBaseUrl(aiBaseUrl);
     setApiKey(aiApiKey);
+    setUseCustomProvider(aiUseCustomProvider);
     setTestState('idle');
     setTestError('');
-  }, [settingsPanelOpen, aiProvider, aiModel, aiBaseUrl, aiApiKey]);
+  }, [settingsPanelOpen, aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider]);
 
   const handleProviderChange = (p: string) => {
     setProvider(p);
@@ -105,13 +110,38 @@ export function SettingsPanel() {
         invoke('set_setting', { key: 'ai_model',    value: model    }),
         invoke('set_setting', { key: 'ai_base_url', value: baseUrl  }),
         invoke('set_setting', { key: 'ai_api_key',  value: apiKey   }),
+        invoke('set_setting', { key: 'ai_use_custom_provider', value: String(useCustomProvider) }),
       ]);
-      setAiSettings({ aiProvider: provider, aiModel: model, aiBaseUrl: baseUrl, aiApiKey: apiKey });
+      setAiSettings({ aiProvider: provider, aiModel: model, aiBaseUrl: baseUrl, aiApiKey: apiKey, aiUseCustomProvider: useCustomProvider });
       setSettingsPanelOpen(false);
     } catch (err) {
       console.error('Failed to save settings:', err);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleUpgrade = async () => {
+    setBillingError('');
+    setBillingBusy(true);
+    try {
+      await startProCheckout();
+    } catch (err) {
+      setBillingError(err instanceof Error ? err.message : 'Failed to start checkout.');
+    } finally {
+      setBillingBusy(false);
+    }
+  };
+
+  const handleManageSubscription = async () => {
+    setBillingError('');
+    setBillingBusy(true);
+    try {
+      await openBillingPortal();
+    } catch (err) {
+      setBillingError(err instanceof Error ? err.message : 'Failed to open billing portal.');
+    } finally {
+      setBillingBusy(false);
     }
   };
 
@@ -140,14 +170,45 @@ export function SettingsPanel() {
                   Sign out
                 </button>
               </div>
-              {user.tier === 'free' && (
-                <span className="settings-account-quota">
-                  AI Calls: {Math.max(0, FREE_TIER_MONTHLY_CALLS - (user.callsRemaining ?? FREE_TIER_MONTHLY_CALLS))} / {FREE_TIER_MONTHLY_CALLS} this month
-                </span>
+              {user.tier === 'pro' ? (
+                <div className="settings-account-row">
+                  <span className="settings-account-quota">Pro Plan — Unlimited AI</span>
+                  <button className="settings-account-signout" onClick={handleManageSubscription} disabled={billingBusy}>
+                    Manage subscription
+                  </button>
+                </div>
+              ) : (
+                <div className="settings-account-row">
+                  <span className="settings-account-quota">
+                    Free Plan — {Math.max(0, FREE_TIER_MONTHLY_CALLS - (user.callsRemaining ?? FREE_TIER_MONTHLY_CALLS))} / {FREE_TIER_MONTHLY_CALLS} AI calls this month
+                  </span>
+                  <button className="settings-account-signout" onClick={handleUpgrade} disabled={billingBusy}>
+                    Upgrade to Pro →
+                  </button>
+                </div>
               )}
+              {billingError && <p className="settings-feedback settings-feedback--err">{billingError}</p>}
             </div>
           )}
 
+          <div className="settings-field settings-field--row">
+            <label className="settings-label" htmlFor="use-custom-provider">Use my own AI provider</label>
+            <input
+              id="use-custom-provider"
+              type="checkbox"
+              checked={useCustomProvider}
+              onChange={(e) => setUseCustomProvider(e.target.checked)}
+            />
+          </div>
+
+          {!useCustomProvider && (
+            <p className="settings-feedback">
+              AI calls route through Pagedge's built-in AI. Enable this to use your own Ollama or API-key-based provider instead.
+            </p>
+          )}
+
+          {useCustomProvider && (
+          <>
           <div className="settings-field">
             <label className="settings-label">Provider</label>
             <select
@@ -202,16 +263,20 @@ export function SettingsPanel() {
           {testState === 'error' && (
             <p className="settings-feedback settings-feedback--err">{testError}</p>
           )}
+          </>
+          )}
         </div>
 
         <div className="settings-footer">
-          <button
-            className="settings-btn settings-btn--ghost"
-            onClick={handleTest}
-            disabled={testState === 'testing'}
-          >
-            {testState === 'testing' ? 'Testing…' : 'Test connection'}
-          </button>
+          {useCustomProvider && (
+            <button
+              className="settings-btn settings-btn--ghost"
+              onClick={handleTest}
+              disabled={testState === 'testing'}
+            >
+              {testState === 'testing' ? 'Testing…' : 'Test connection'}
+            </button>
+          )}
           <button
             className="settings-btn settings-btn--primary"
             onClick={handleSave}

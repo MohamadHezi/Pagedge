@@ -19,7 +19,18 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Windows/Linux register the pagedge:// scheme via the installer in
+            // production, but `cargo tauri dev` builds skip that step — this
+            // registers it at runtime so deep links work in development too.
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
+
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
 
@@ -167,6 +178,7 @@ pub fn run() {
             let _ = conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_model', 'llama3.2')", []);
             let _ = conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_base_url', 'http://localhost:11434/v1')", []);
             let _ = conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_api_key', '')", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ai_use_custom_provider', 'false')", []);
 
             // Column migrations — silently no-op if column already exists
             let _ = conn.execute("ALTER TABLE highlights ADD COLUMN rects TEXT", []);

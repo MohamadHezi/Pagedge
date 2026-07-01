@@ -32,7 +32,7 @@ export function AuthModal() {
         ? await signIn(email.trim(), password)
         : await signUp(email.trim(), password);
       const me = await getMe(session.access_token);
-      setUser({ id: session.user_id, email: session.email, tier: session.tier, callsRemaining: me.calls_remaining });
+      setUser({ id: session.user_id, email: session.email, tier: session.tier, callsRemaining: me.calls_remaining, resetAt: me.ai_calls_reset_at });
     } catch (err) {
       if (err instanceof AuthApiError) {
         setError(err.message);
