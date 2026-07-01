@@ -13,7 +13,7 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
-    target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
+    target: ["chrome105", "safari15", "firefox102"],
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
@@ -24,5 +24,10 @@ export default defineConfig({
   assetsInclude: ["**/*.wasm"],
   worker: {
     format: "es",
+    rollupOptions: {
+      output: {
+        format: "es",
+      },
+    },
   },
 });
