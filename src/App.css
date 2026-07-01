@@ -2095,6 +2095,38 @@
   margin-top: 18px;
 }
 
+.auth-verify {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-verify-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-align: center;
+  margin: 0 0 4px;
+}
+
+.auth-verify-text strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.auth-link-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: center;
+  padding: 4px 0;
+  transition: color 0.15s;
+}
+.auth-link-btn:hover { color: var(--accent); }
+
 /* ── Paywall modal ── */
 .paywall-overlay {
   position: fixed;
@@ -2587,6 +2619,38 @@
   white-space: nowrap;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
 }
+
+.app-toast--action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: normal;
+  max-width: 440px;
+}
+
+.app-toast-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 0;
+}
+.app-toast-link:hover { color: var(--accent-bright); }
+
+.app-toast-dismiss {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.app-toast-dismiss:hover { color: var(--text-primary); }
 
 /* ── Search modal ── */
 .search-overlay {

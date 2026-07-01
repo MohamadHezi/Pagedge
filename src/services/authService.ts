@@ -72,16 +72,35 @@ export async function clearSession(): Promise<void> {
   await store.save();
 }
 
-export async function signUp(email: string, password: string): Promise<StoredSession> {
-  const res = await request<{ user_id: string; access_token: string; refresh_token: string }>(
+// Email verification is required — the backend does NOT return a session
+// here (no access_token exists until the user clicks the confirmation
+// link), so there's nothing to store yet. Caller should show a
+// "check your email" screen instead of entering the app.
+export async function signUp(email: string, password: string): Promise<{ email: string }> {
+  await request<{ user_id: string; email: string; verification_required: boolean }>(
     '/auth/signup',
     { method: 'POST', body: JSON.stringify({ email, password }) }
   );
-  const me = await getMe(res.access_token);
+  return { email };
+}
+
+// Always resolves — the backend never reveals whether the email exists or
+// whether the send actually succeeded, and rate-limits repeat calls itself.
+export async function resendConfirmation(email: string): Promise<void> {
+  await request<{ ok: boolean }>('/auth/resend-confirmation', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+// Called from the pagedge://auth/confirm deep link, which carries the
+// tokens Supabase mints once the confirmation link is clicked.
+export async function saveSessionTokens(accessToken: string, refreshToken: string): Promise<StoredSession> {
+  const me = await getMe(accessToken);
   const session: StoredSession = {
-    access_token: res.access_token,
-    refresh_token: res.refresh_token,
-    user_id: res.user_id,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    user_id: me.user_id,
     email: me.email,
     tier: me.tier,
   };

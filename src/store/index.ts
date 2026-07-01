@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
-import { resolveSession, signOut as signOutApi, loadSession, getMe } from "../services/authService";
+import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
 
 export interface AuthUser {
   id: string;
@@ -24,12 +24,18 @@ interface AppState {
   initAuth: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshUserFromMe: () => Promise<void>;
+  completeEmailVerification: (accessToken: string, refreshToken: string) => Promise<void>;
 
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: boolean;
   paywallReason: PaywallReason | null;
   showPaywall: (reason: PaywallReason) => void;
   closePaywall: () => void;
+
+  // ── Email verification toast ─────────────────────────────────────────────────
+  emailVerifyToastOpen: boolean;
+  showEmailVerifyToast: () => void;
+  dismissEmailVerifyToast: () => void;
 
   // ── PDFs ────────────────────────────────────────────────────────────────────
   pdfs: Pdf[];
@@ -252,11 +258,32 @@ export const useStore = create<AppState>((set) => ({
     }
   },
 
+  // Called from the pagedge://auth/confirm deep link once the user has
+  // clicked the confirmation email — saves the tokens Supabase minted and
+  // logs the user straight into the app.
+  completeEmailVerification: async (accessToken, refreshToken) => {
+    try {
+      await saveSessionTokens(accessToken, refreshToken);
+      const me = await getMe(accessToken);
+      set({
+        user: { id: me.user_id, email: me.email, tier: me.tier, callsRemaining: me.calls_remaining, resetAt: me.ai_calls_reset_at },
+        isAuthenticated: true,
+      });
+    } catch (err) {
+      console.error('Failed to complete email verification:', err);
+    }
+  },
+
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: false,
   paywallReason: null,
   showPaywall: (reason) => set({ paywallOpen: true, paywallReason: reason }),
   closePaywall: () => set({ paywallOpen: false, paywallReason: null }),
+
+  // ── Email verification toast ─────────────────────────────────────────────────
+  emailVerifyToastOpen: false,
+  showEmailVerifyToast: () => set({ emailVerifyToastOpen: true }),
+  dismissEmailVerifyToast: () => set({ emailVerifyToastOpen: false }),
 
   // ── PDFs ────────────────────────────────────────────────────────────────────
   pdfs: [],

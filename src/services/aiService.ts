@@ -118,6 +118,15 @@ async function callProxy(
     throw new Error('quota_exceeded');
   }
 
+  if (response.status === 403) {
+    const data = await response.json().catch(() => ({}));
+    if (data?.error === 'email_not_verified') {
+      useStore.getState().showEmailVerifyToast();
+      throw new Error('Please verify your email to use AI features.');
+    }
+    throw new Error(data?.error || 'Forbidden');
+  }
+
   if (response.status === 400) {
     const data = await response.json().catch(() => ({}));
     if (data?.error === 'context_too_large') showPaywall('context_too_large');

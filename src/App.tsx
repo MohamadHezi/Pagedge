@@ -13,13 +13,15 @@ import { AuthModal } from "./components/AuthModal";
 import { PaywallModal } from "./components/PaywallModal";
 import { useStore } from "./store";
 import { checkForUpdates } from "./services/updateService";
+import { resendConfirmation } from "./services/authService";
 import "./App.css";
 
 function App() {
   const {
     loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen,
-    initAuth, isAuthenticated, authLoading,
-    refreshUserFromMe, closePaywall,
+    initAuth, isAuthenticated, authLoading, user,
+    refreshUserFromMe, closePaywall, completeEmailVerification,
+    emailVerifyToastOpen, dismissEmailVerifyToast,
   } = useStore();
 
   const [appToast, setAppToast] = useState<string | null>(null);
@@ -39,6 +41,10 @@ function App() {
 
   // pagedge://stripe-success / pagedge://stripe-cancel — fired when Stripe
   // Checkout / the billing portal redirects back to the desktop app.
+  // pagedge://auth/confirm — fired when Supabase's email confirmation link
+  // redirects back. Supabase appends the minted access/refresh tokens as a
+  // URL fragment (the same implicit-grant shape used for OAuth), so the
+  // deep link itself carries everything needed to log the user in.
   useEffect(() => {
     const unlistenPromise = onOpenUrl((urls) => {
       const url = urls[0];
@@ -50,10 +56,24 @@ function App() {
         });
       } else if (url.startsWith('pagedge://stripe-cancel')) {
         showAppToast("No worries — you're still on the free plan.");
+      } else if (url.startsWith('pagedge://auth/confirm')) {
+        const hash = new URL(url).hash.replace(/^#/, '');
+        const params = new URLSearchParams(hash);
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+        if (accessToken && refreshToken) {
+          completeEmailVerification(accessToken, refreshToken).then(() => {
+            showAppToast('Email confirmed! Welcome to Pagedge.');
+          });
+        } else {
+          refreshUserFromMe().then(() => {
+            showAppToast('Email confirmed — you can now sign in.');
+          });
+        }
       }
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
-  }, [refreshUserFromMe, closePaywall]);
+  }, [refreshUserFromMe, closePaywall, completeEmailVerification]);
 
   // Ctrl+K / Cmd+K global shortcut to open search
   useEffect(() => {
@@ -94,6 +114,25 @@ function App() {
       <ReviewMode />
       <PaywallModal />
       {appToast && <div className="app-toast">{appToast}</div>}
+      {emailVerifyToastOpen && user && (
+        <div className="app-toast app-toast--action">
+          <span>Please verify your email to use AI features. Check your inbox for a confirmation link.</span>
+          <button
+            type="button"
+            className="app-toast-link"
+            onClick={() => {
+              resendConfirmation(user.email).catch(() => {});
+              showAppToast('Confirmation email sent.');
+              dismissEmailVerifyToast();
+            }}
+          >
+            Resend confirmation
+          </button>
+          <button type="button" className="app-toast-dismiss" onClick={dismissEmailVerifyToast} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }
