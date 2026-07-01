@@ -1,11 +1,11 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import { signIn, signUp, getMe, resendConfirmation, AuthApiError } from '../services/authService';
 import { useStore } from '../store';
 
 type Mode = 'signin' | 'signup' | 'verify-email';
 
 export function AuthModal() {
-  const { setUser } = useStore();
+  const { setUser, authTokenError, clearAuthTokenError } = useStore();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -14,10 +14,19 @@ export function AuthModal() {
   const [resendLoading, setResendLoading] = useState(false);
   const [resendSent, setResendSent] = useState(false);
 
+  // A pagedge://auth/confirm deep link failed (stale/expired/already-used
+  // token) — that error must only ever surface on the verify-email screen,
+  // so force the modal there regardless of whatever tab the user had open.
+  // It's never written into the signin/signup `error` state above.
+  useEffect(() => {
+    if (authTokenError) setMode('verify-email');
+  }, [authTokenError]);
+
   const switchMode = (next: Mode) => {
     setMode(next);
     setError('');
     setResendSent(false);
+    clearAuthTokenError();
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -61,6 +70,7 @@ export function AuthModal() {
     try {
       await resendConfirmation(email.trim());
       setResendSent(true);
+      clearAuthTokenError();
     } catch {
       // The backend always returns 200, so a failure here is a network
       // error — surface the same generic copy used elsewhere.
@@ -79,10 +89,17 @@ export function AuthModal() {
 
         {mode === 'verify-email' ? (
           <div className="auth-verify">
-            <p className="auth-verify-text">
-              Check your inbox. We sent a confirmation link to <strong>{email.trim()}</strong>.
-              Click it to activate your account.
-            </p>
+            {authTokenError ? (
+              <p className="auth-verify-text">
+                That confirmation link is no longer valid — it may be expired or already used.
+                {email.trim() ? ' Request a new one below, or sign in if your email is already confirmed.' : ' Please sign in, or request a new confirmation link if you haven’t confirmed yet.'}
+              </p>
+            ) : (
+              <p className="auth-verify-text">
+                Check your inbox. We sent a confirmation link to <strong>{email.trim()}</strong>.
+                Click it to activate your account.
+              </p>
+            )}
 
             {resendSent && <p className="settings-feedback settings-feedback--ok">Confirmation email sent.</p>}
             {error && <p className="settings-feedback settings-feedback--err">{error}</p>}
@@ -91,7 +108,7 @@ export function AuthModal() {
               type="button"
               className="auth-submit-btn"
               onClick={handleResend}
-              disabled={resendLoading}
+              disabled={resendLoading || !email.trim()}
             >
               {resendLoading ? 'Sending…' : 'Resend confirmation email'}
             </button>

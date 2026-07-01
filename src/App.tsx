@@ -16,6 +16,12 @@ import { checkForUpdates } from "./services/updateService";
 import { resendConfirmation } from "./services/authService";
 import "./App.css";
 
+// Persisted (survives app restarts, unlike a ref) so that if the deep-link
+// plugin ever replays the same startup URL on a later, ordinary launch —
+// a known platform quirk — an already-consumed confirmation token is not
+// reprocessed and re-thrown as a stale "Invalid or expired token" error.
+const PROCESSED_AUTH_TOKEN_KEY = 'pagedge_last_processed_auth_token';
+
 function App() {
   const {
     loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen,
@@ -61,15 +67,23 @@ function App() {
         const params = new URLSearchParams(hash);
         const accessToken = params.get('access_token');
         const refreshToken = params.get('refresh_token');
-        if (accessToken && refreshToken) {
-          completeEmailVerification(accessToken, refreshToken).then(() => {
-            showAppToast('Email confirmed! Welcome to Pagedge.');
-          });
-        } else {
-          refreshUserFromMe().then(() => {
-            showAppToast('Email confirmed — you can now sign in.');
-          });
-        }
+
+        // Only a URL that actually carries a token fragment means the app
+        // was opened BY this deep link. A bare `pagedge://auth/confirm`
+        // (e.g. a stale launch-arg replay with no fragment) is not that —
+        // ignore it rather than guessing at a fallback action.
+        if (!accessToken || !refreshToken) return;
+
+        // The token is single-use / short-lived. If we've already consumed
+        // this exact one (this session or a previous launch), don't process
+        // it again — that would just reject with a stale "Invalid or
+        // expired token" error every time the app starts.
+        if (localStorage.getItem(PROCESSED_AUTH_TOKEN_KEY) === accessToken) return;
+        localStorage.setItem(PROCESSED_AUTH_TOKEN_KEY, accessToken);
+
+        completeEmailVerification(accessToken, refreshToken).then(() => {
+          showAppToast('Email confirmed! Welcome to Pagedge.');
+        });
       }
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };

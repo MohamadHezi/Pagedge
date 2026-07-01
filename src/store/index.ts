@@ -26,6 +26,13 @@ interface AppState {
   refreshUserFromMe: () => Promise<void>;
   completeEmailVerification: (accessToken: string, refreshToken: string) => Promise<void>;
 
+  // Error from processing a pagedge://auth/confirm deep link (e.g. a
+  // stale/expired/already-used token). Kept separate from AuthModal's own
+  // local form-submit error so it can never bleed into the signin/signup
+  // tabs — only the verify-email screen reads this.
+  authTokenError: string | null;
+  clearAuthTokenError: () => void;
+
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: boolean;
   paywallReason: PaywallReason | null;
@@ -216,8 +223,14 @@ export const useStore = create<AppState>((set) => ({
   setUser: (user) => set({ user, isAuthenticated: true }),
   clearUser: () => set({ user: null, isAuthenticated: false }),
 
+  authTokenError: null,
+
   initAuth: async () => {
-    set({ authLoading: true });
+    // Startup — there's no deep link being processed yet (that only
+    // happens if/when onOpenUrl actually fires), so any authTokenError
+    // left over from a previous session's failed verification attempt is
+    // stale and must not carry forward into this one.
+    set({ authLoading: true, authTokenError: null });
     try {
       const resolved = await resolveSession();
       if (!resolved) {
@@ -260,7 +273,10 @@ export const useStore = create<AppState>((set) => ({
 
   // Called from the pagedge://auth/confirm deep link once the user has
   // clicked the confirmation email — saves the tokens Supabase minted and
-  // logs the user straight into the app.
+  // logs the user straight into the app. On failure (stale/expired/
+  // already-used token), records it in authTokenError instead of the
+  // console only — AuthModal surfaces this exclusively on the
+  // verify-email screen, never on the signin/signup tabs.
   completeEmailVerification: async (accessToken, refreshToken) => {
     try {
       await saveSessionTokens(accessToken, refreshToken);
@@ -268,11 +284,15 @@ export const useStore = create<AppState>((set) => ({
       set({
         user: { id: me.user_id, email: me.email, tier: me.tier, callsRemaining: me.calls_remaining, resetAt: me.ai_calls_reset_at },
         isAuthenticated: true,
+        authTokenError: null,
       });
     } catch (err) {
       console.error('Failed to complete email verification:', err);
+      set({ authTokenError: err instanceof Error ? err.message : 'Invalid or expired token' });
     }
   },
+
+  clearAuthTokenError: () => set({ authTokenError: null }),
 
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: false,
