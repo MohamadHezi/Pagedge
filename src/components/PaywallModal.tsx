@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { startProCheckout } from '../services/stripeService';
+import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
 
 export function PaywallModal() {
   const { paywallOpen, paywallReason, closePaywall, user } = useStore();
@@ -35,7 +36,7 @@ export function PaywallModal() {
         <p className="paywall-body">
           {paywallReason === 'context_too_large'
             ? 'This document is too large for the free plan. Upgrade to Pro for unlimited document size.'
-            : "You've used all 30 AI calls for this month. Upgrade to Pro for unlimited AI."}
+            : `You've used all ${FREE_TIER_MONTHLY_CALLS} AI calls for this month. Upgrade to Pro for unlimited AI.`}
         </p>
 
         {paywallReason === 'quota_exceeded' && resetLabel && (

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { useStore } from '../store';
 import { startProCheckout, openBillingPortal } from '../services/stripeService';
+import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
 
 const PROVIDER_URLS: Record<string, string> = {
   ollama:      'http://localhost:11434/v1',
@@ -23,8 +24,6 @@ const PROVIDERS = [
 ];
 
 type TestState = 'idle' | 'testing' | 'ok' | 'error';
-
-const FREE_TIER_MONTHLY_CALLS = 30;
 
 export function SettingsPanel() {
   const {

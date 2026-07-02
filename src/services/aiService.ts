@@ -6,6 +6,10 @@ export type { AiMessage };
 
 const FREE_TIER_MAX_CONTEXT_CHARS = 5000;
 
+// Mirrors FREE_TIER_LIMIT in pagedge-backend/lib/constants.ts — the backend
+// is the enforcement point; this is only for quota display and pre-checks.
+export const FREE_TIER_MONTHLY_CALLS = 15;
+
 function totalChars(messages: AiMessage[]): number {
   return messages.reduce((sum, m) => sum + m.content.length, 0);
 }
