@@ -111,6 +111,10 @@ interface AppState {
   settingsPanelOpen: boolean;
   setSettingsPanelOpen: (open: boolean) => void;
 
+  // ── Feedback ──────────────────────────────────────────────────────────────────
+  feedbackModalOpen: boolean;
+  setFeedbackModalOpen: (open: boolean) => void;
+
   // ── Search ────────────────────────────────────────────────────────────────────
   searchModalOpen: boolean;
   setSearchModalOpen: (open: boolean) => void;
@@ -461,6 +465,10 @@ export const useStore = create<AppState>((set) => ({
   // ── Settings panel ────────────────────────────────────────────────────────────
   settingsPanelOpen: false,
   setSettingsPanelOpen: (open) => set({ settingsPanelOpen: open }),
+
+  // ── Feedback ──────────────────────────────────────────────────────────────────
+  feedbackModalOpen: false,
+  setFeedbackModalOpen: (open) => set({ feedbackModalOpen: open }),
 
   // ── Search ────────────────────────────────────────────────────────────────────
   searchModalOpen: false,

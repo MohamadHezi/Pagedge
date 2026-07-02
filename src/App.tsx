@@ -11,6 +11,8 @@ import { ExportDialog } from "./components/ExportDialog";
 import { ReviewMode } from "./components/ReviewMode";
 import { AuthModal } from "./components/AuthModal";
 import { PaywallModal } from "./components/PaywallModal";
+import { FeedbackButton } from "./components/FeedbackButton";
+import { FeedbackModal } from "./components/FeedbackModal";
 import { useStore } from "./store";
 import { checkForUpdates } from "./services/updateService";
 import { resendConfirmation } from "./services/authService";
@@ -127,6 +129,8 @@ function App() {
       <ExportDialog />
       <ReviewMode />
       <PaywallModal />
+      <FeedbackButton />
+      <FeedbackModal />
       {appToast && <div className="app-toast">{appToast}</div>}
       {emailVerifyToastOpen && user && (
         <div className="app-toast app-toast--action">
