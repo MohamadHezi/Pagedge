@@ -4,13 +4,14 @@ import { startProCheckout } from '../services/stripeService';
 import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
 
 export function PaywallModal() {
-  const { paywallOpen, paywallReason, closePaywall, user } = useStore();
+  const { isAuthenticated, requireAuth, paywallOpen, paywallReason, closePaywall, user } = useStore();
   const [upgrading, setUpgrading] = useState(false);
   const [error, setError] = useState('');
 
   if (!paywallOpen || !paywallReason) return null;
 
   const handleUpgrade = async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to upgrade to Pro', () => handleUpgrade());
     setError('');
     setUpgrading(true);
     try {
@@ -30,12 +31,18 @@ export function PaywallModal() {
     <div className="paywall-overlay" onMouseDown={closePaywall}>
       <div className="paywall-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2 className="paywall-title">
-          {paywallReason === 'context_too_large' ? 'Document too large' : 'Monthly limit reached'}
+          {paywallReason === 'context_too_large'
+            ? 'Document too large'
+            : paywallReason === 'sync_requires_pro'
+            ? 'Sync is a Pro feature'
+            : 'Monthly limit reached'}
         </h2>
 
         <p className="paywall-body">
           {paywallReason === 'context_too_large'
             ? 'This document is too large for the free plan. Upgrade to Pro for unlimited document size.'
+            : paywallReason === 'sync_requires_pro'
+            ? 'Syncing your highlights, notes, and flashcards across devices is a Pro feature. Upgrade to Pro to keep everything in sync.'
             : `You've used all ${FREE_TIER_MONTHLY_CALLS} AI calls for this month. Upgrade to Pro for unlimited AI.`}
         </p>
 

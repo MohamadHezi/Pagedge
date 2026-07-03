@@ -407,11 +407,11 @@ CREATE TABLE IF NOT EXISTS settings (
 - **Desktop: `pagedge://auth/confirm` deep link** — handled in the same `onOpenUrl` listener as `stripe-success`/`stripe-cancel` (`App.tsx`). Supabase's confirmation redirect appends `access_token`/`refresh_token` as a URL fragment (implicit-grant shape, same as OAuth) — the handler parses `new URL(url).hash`, and if tokens are present calls the new store action `completeEmailVerification(accessToken, refreshToken)`, which persists the session via `saveSessionTokens` and sets `user`/`isAuthenticated` directly (no separate sign-in step needed). Falls back to `refreshUserFromMe()` if the link carries no tokens.
 - **No changes to sign-in** — `signIn()`/`AuthModal`'s sign-in tab behave exactly as before. Existing users created before this change already have `email_confirmed_at` set (Supabase backfills it for pre-existing confirmed users), so they're unaffected.
 
-## Roadmap — Steps 9–10
+### Step 9 — Highlights Panel ✅
+- Right sidebar tab (`HighlightsView` in `RightPanel.tsx`) lists all highlights in the current PDF sorted by page, click to jump to source, filter by lens color.
 
-- **Step 9** — Highlights panel: right sidebar tab that lists all highlights in the current PDF sorted by page, click to jump, filter by lens color.
-
-- **Step 10** — Polish: animations, hover effects, micro-interactions, keyboard shortcuts, onboarding empty states. (Mac + Windows packaging moved to Step 10c, completed ahead of this.)
+### Step 10 — Polish ✅
+- Animations, hover effects, micro-interactions, keyboard shortcuts, onboarding empty states applied across the app. (Mac + Windows packaging moved to Step 10c, completed ahead of this.) In-app feedback button/modal (`feedbackService.ts`) also shipped as part of overall polish.
 
 ---
 

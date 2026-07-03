@@ -701,6 +701,8 @@ function hitTestDrawing(d: Drawing, pdfX: number, pdfY: number, scale: number): 
 
 export function PdfViewer({ filePath, pdfId }: Props) {
   const {
+    isAuthenticated,
+    requireAuth,
     selectedPdfId,
     highlights,
     loadHighlights,
@@ -1077,6 +1079,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
   // ── Explain handler ────────────────────────────────────────────────────────
   const handleExplain = useCallback(async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to explain this selection', () => handleExplain());
     if (!picker) return;
     const text = picker.text;
     const page = picker.pages[0]?.pageNum ?? 1;
@@ -1100,6 +1103,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
   // ── Summarize page handler ─────────────────────────────────────────────────
   const handleSummarizePage = useCallback(async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to summarize this page', () => handleSummarizePage());
     if (!pdfDocRef.current) return;
     setExplainPanel({ x: window.innerWidth / 2 - 160, y: 60, selectedText: '', page: currentPage, loading: true, response: null, error: null });
     try {
@@ -1135,6 +1139,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   }, []);
 
   const handleSummarizeByColor = useCallback(async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to summarize by lens', () => handleSummarizeByColor());
     if (activeLens === 'default') return;
     const lens = activeLens as Exclude<LensKey, 'default'>;
     const colorKey = LENS_TO_COLOR_KEY[lens];
@@ -1170,6 +1175,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   }, [activeLens, highlights, setSummary, setIsSummarizing, clearSummary, showToast]);
 
   const handleGenerateFlashcards = useCallback(async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to generate flashcards', () => handleGenerateFlashcards());
     const existingIds = new Set(flashcards.map((f) => f.source_highlight_id));
     const greenHighlights = highlights.filter((h) => h.color === 'green');
     const pending = greenHighlights.filter((h) => !existingIds.has(h.id));

@@ -4,8 +4,15 @@ import { useStore } from '../store';
 
 type Mode = 'signin' | 'signup' | 'verify-email';
 
-export function AuthModal() {
-  const { setUser, authTokenError, clearAuthTokenError } = useStore();
+interface AuthModalProps {
+  // Context for why the prompt was raised (e.g. "Sign in to chat with this
+  // PDF"), shown above the tabs. Undefined shows the plain sign-in/create
+  // account form with no extra banner.
+  reason?: string;
+}
+
+export function AuthModal({ reason }: AuthModalProps) {
+  const { setUser, authTokenError, clearAuthTokenError, dismissAuthPrompt, authPromptOnSuccess } = useStore();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -44,6 +51,11 @@ export function AuthModal() {
         const session = await signIn(email.trim(), password);
         const me = await getMe(session.access_token);
         setUser({ id: session.user_id, email: session.email, tier: session.tier, callsRemaining: me.calls_remaining, resetAt: me.ai_calls_reset_at });
+        // Resume whatever gated action raised this overlay (if any), then
+        // close it regardless — otherwise a successful sign-in here would
+        // leave the form sitting on screen with no visible change.
+        authPromptOnSuccess?.();
+        dismissAuthPrompt();
       } else if (mode === 'signup') {
         // No tokens come back from signup — email verification is
         // required first, so show the "check your email" screen instead
@@ -81,11 +93,24 @@ export function AuthModal() {
   };
 
   return (
-    <div className="auth-overlay">
-      <div className="auth-modal">
+    <div className="auth-overlay" onMouseDown={dismissAuthPrompt}>
+      <div className="auth-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className="auth-dismiss-x"
+          onClick={dismissAuthPrompt}
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
+
         <div className="auth-brand">
           <span className="auth-brand-mark">Pagedge</span>
         </div>
+
+        {mode !== 'verify-email' && reason && (
+          <p className="auth-reason-banner">{reason}</p>
+        )}
 
         {mode === 'verify-email' ? (
           <div className="auth-verify">

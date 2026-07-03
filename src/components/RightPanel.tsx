@@ -127,6 +127,8 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
 
 function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
   const {
+    isAuthenticated,
+    requireAuth,
     pdfs,
     jumpToPage,
     updateNote: storeUpdateNote,
@@ -226,6 +228,7 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
   };
 
   const handleSuggestTags = async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to suggest tags', () => handleSuggestTags());
     if (!localContent.trim() || isSuggestingTags) return;
     setIsSuggestingTags(true);
     try {
@@ -528,6 +531,8 @@ function HighlightItem({ highlight: h, onClick }: { highlight: Highlight; onClic
 
 function ChatView() {
   const {
+    isAuthenticated,
+    requireAuth,
     selectedPdfId,
     pdfs,
     chatMessages,
@@ -551,6 +556,7 @@ function ChatView() {
   }, [chatMessages, typing]);
 
   const handleSend = async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to chat with this PDF', () => handleSend());
     const text = input.trim();
     if (!text || !selectedPdfId || typing) return;
 

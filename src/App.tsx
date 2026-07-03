@@ -16,6 +16,7 @@ import { FeedbackModal } from "./components/FeedbackModal";
 import { useStore } from "./store";
 import { checkForUpdates } from "./services/updateService";
 import { resendConfirmation } from "./services/authService";
+import { pullAllOnForeground } from "./services/syncService";
 import "./App.css";
 
 // Persisted (survives app restarts, unlike a ref) so that if the deep-link
@@ -27,9 +28,10 @@ const PROCESSED_AUTH_TOKEN_KEY = 'pagedge_last_processed_auth_token';
 function App() {
   const {
     loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen,
-    initAuth, isAuthenticated, authLoading, user,
+    initAuth, authLoading, user,
     refreshUserFromMe, closePaywall, completeEmailVerification,
     emailVerifyToastOpen, dismissEmailVerifyToast,
+    authPromptOpen, authPromptReason,
   } = useStore();
 
   const [appToast, setAppToast] = useState<string | null>(null);
@@ -91,6 +93,19 @@ function App() {
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
   }, [refreshUserFromMe, closePaywall, completeEmailVerification]);
 
+  // Sync pull whenever the app regains focus (switching back from another
+  // window/app) — scoped per-PDF inside pullAllOnForeground itself.
+  useEffect(() => {
+    const onFocus = () => { pullAllOnForeground().catch(console.error); };
+    const onVisibility = () => { if (document.visibilityState === 'visible') onFocus(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
   // Ctrl+K / Cmd+K global shortcut to open search
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -107,14 +122,6 @@ function App() {
     return <div className="app-shell auth-loading-shell" />;
   }
 
-  if (!isAuthenticated) {
-    return (
-      <div className="app-shell">
-        <AuthModal />
-      </div>
-    );
-  }
-
   return (
     <div className="app-shell">
       <div className="app-body">
@@ -129,6 +136,7 @@ function App() {
       <ExportDialog />
       <ReviewMode />
       <PaywallModal />
+      {authPromptOpen && <AuthModal reason={authPromptReason ?? undefined} />}
       <FeedbackButton />
       <FeedbackModal />
       {appToast && <div className="app-toast">{appToast}</div>}

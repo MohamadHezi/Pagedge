@@ -27,6 +27,7 @@ type TestState = 'idle' | 'testing' | 'ok' | 'error';
 
 export function SettingsPanel() {
   const {
+    isAuthenticated, requireAuth,
     settingsPanelOpen, setSettingsPanelOpen,
     aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
@@ -133,6 +134,7 @@ export function SettingsPanel() {
   };
 
   const handleManageSubscription = async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to manage your subscription', () => handleManageSubscription());
     setBillingError('');
     setBillingBusy(true);
     try {
@@ -190,6 +192,8 @@ export function SettingsPanel() {
             </div>
           )}
 
+          {isAuthenticated && (
+          <>
           <div className="settings-field settings-field--row">
             <label className="settings-label" htmlFor="use-custom-provider">Use my own AI provider</label>
             <input
@@ -264,10 +268,18 @@ export function SettingsPanel() {
           )}
           </>
           )}
+          </>
+          )}
+
+          {!isAuthenticated && (
+            <p className="settings-feedback">
+              Sign in to configure AI provider settings.
+            </p>
+          )}
         </div>
 
         <div className="settings-footer">
-          {useCustomProvider && (
+          {isAuthenticated && useCustomProvider && (
             <button
               className="settings-btn settings-btn--ghost"
               onClick={handleTest}

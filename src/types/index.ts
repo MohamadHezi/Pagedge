@@ -8,6 +8,7 @@ export interface Pdf {
   chunk_count: number | null;
   ingested_at: string | null;
   last_opened: string | null;
+  content_hash: string | null;
 }
 
 export interface PageText {

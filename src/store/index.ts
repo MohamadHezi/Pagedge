@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
+import { schedulePush, pullPdf } from "../services/syncService";
 
 export interface AuthUser {
   id: string;
@@ -12,7 +13,7 @@ export interface AuthUser {
   resetAt: string | null;
 }
 
-export type PaywallReason = 'context_too_large' | 'quota_exceeded';
+export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro';
 
 interface AppState {
   // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -32,6 +33,19 @@ interface AppState {
   // tabs — only the verify-email screen reads this.
   authTokenError: string | null;
   clearAuthTokenError: () => void;
+
+  // Dismissible auth overlay shown on top of the live app (not a full-tree
+  // gate) — call sites that need a signed-in user call requireAuth(reason)
+  // to surface it with context-specific copy; the user can dismiss it and
+  // keep using whatever parts of the app don't need an account. An optional
+  // onSuccess callback is stashed alongside the prompt and fired by
+  // AuthModal after a successful sign-in, so the original gated action
+  // resumes instead of leaving the user to re-click it.
+  authPromptOpen: boolean;
+  authPromptReason: string | null;
+  authPromptOnSuccess: (() => void) | null;
+  requireAuth: (reason?: string, onSuccess?: () => void) => void;
+  dismissAuthPrompt: () => void;
 
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: boolean;
@@ -298,6 +312,12 @@ export const useStore = create<AppState>((set) => ({
 
   clearAuthTokenError: () => set({ authTokenError: null }),
 
+  authPromptOpen: false,
+  authPromptReason: null,
+  authPromptOnSuccess: null,
+  requireAuth: (reason, onSuccess) => set({ authPromptOpen: true, authPromptReason: reason ?? null, authPromptOnSuccess: onSuccess ?? null }),
+  dismissAuthPrompt: () => set({ authPromptOpen: false, authPromptReason: null, authPromptOnSuccess: null }),
+
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: false,
   paywallReason: null,
@@ -324,6 +344,10 @@ export const useStore = create<AppState>((set) => ({
       if (state.pdfs.some((p) => p.id === pdf.id || p.filepath === pdf.filepath)) return state;
       return { pdfs: [...state.pdfs, pdf] };
     });
+    // Content hashing runs in the background — never block the import UI on it.
+    if (!pdf.content_hash) {
+      invoke("update_pdf_content_hash", { id: pdf.id, filepath: pdf.filepath }).catch(console.error);
+    }
     return pdf;
   },
 
@@ -349,12 +373,25 @@ export const useStore = create<AppState>((set) => ({
       ),
     })),
 
-  selectPdf: (id) => set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null }),
+  selectPdf: (id) => {
+    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null });
+    if (id) {
+      const pdf = useStore.getState().pdfs.find((p) => p.id === id);
+      if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
+    }
+  },
 
   loadPdfs: async () => {
     const json = await invoke<string>("get_pdfs");
     const pdfs: Pdf[] = JSON.parse(json);
     set({ pdfs });
+    // Backfill content_hash for PDFs imported before the sync migration —
+    // fire-and-forget, one background hash per unhashed row, never blocks load.
+    for (const pdf of pdfs) {
+      if (!pdf.content_hash) {
+        invoke("update_pdf_content_hash", { id: pdf.id, filepath: pdf.filepath }).catch(console.error);
+      }
+    }
   },
 
   // ── Highlights ───────────────────────────────────────────────────────────────
@@ -367,11 +404,17 @@ export const useStore = create<AppState>((set) => ({
     set({ highlights });
   },
 
-  addHighlight: (h: Highlight) =>
-    set((state) => ({ highlights: [...state.highlights, h] })),
+  addHighlight: (h: Highlight) => {
+    set((state) => ({ highlights: [...state.highlights, h] }));
+    schedulePush(h.pdf_id);
+  },
 
   removeHighlight: (id: string) =>
-    set((state) => ({ highlights: state.highlights.filter((h) => h.id !== id) })),
+    set((state) => {
+      const removed = state.highlights.find((h) => h.id === id);
+      if (removed) schedulePush(removed.pdf_id);
+      return { highlights: state.highlights.filter((h) => h.id !== id) };
+    }),
 
   setActiveLens: (lens: LensKey) => set({ activeLens: lens }),
 
@@ -387,16 +430,25 @@ export const useStore = create<AppState>((set) => ({
     set({ notes });
   },
 
-  addNote: (note: Note) =>
-    set((state) => ({ notes: [note, ...state.notes] })),
+  addNote: (note: Note) => {
+    set((state) => ({ notes: [note, ...state.notes] }));
+    if (note.source_pdf_id) schedulePush(note.source_pdf_id);
+  },
 
   updateNote: (id: string, changes: Partial<Note>) =>
-    set((state) => ({
-      notes: state.notes.map((n) => (n.id === id ? { ...n, ...changes } : n)),
-    })),
+    set((state) => {
+      const updated = state.notes.map((n) => (n.id === id ? { ...n, ...changes } : n));
+      const note = updated.find((n) => n.id === id);
+      if (note?.source_pdf_id) schedulePush(note.source_pdf_id);
+      return { notes: updated };
+    }),
 
   removeNote: (id: string) =>
-    set((state) => ({ notes: state.notes.filter((n) => n.id !== id) })),
+    set((state) => {
+      const removed = state.notes.find((n) => n.id === id);
+      if (removed?.source_pdf_id) schedulePush(removed.source_pdf_id);
+      return { notes: state.notes.filter((n) => n.id !== id) };
+    }),
 
   setSelectedNoteId: (id) => set({ selectedNoteId: id }),
 
@@ -558,16 +610,25 @@ export const useStore = create<AppState>((set) => ({
     set({ flashcards: JSON.parse(json) });
   },
 
-  addFlashcard: (f: Flashcard) =>
-    set((state) => ({ flashcards: [...state.flashcards, f] })),
+  addFlashcard: (f: Flashcard) => {
+    set((state) => ({ flashcards: [...state.flashcards, f] }));
+    schedulePush(f.pdf_id);
+  },
 
   removeFlashcard: (id: string) =>
-    set((state) => ({ flashcards: state.flashcards.filter((f) => f.id !== id) })),
+    set((state) => {
+      const removed = state.flashcards.find((f) => f.id === id);
+      if (removed) schedulePush(removed.pdf_id);
+      return { flashcards: state.flashcards.filter((f) => f.id !== id) };
+    }),
 
   updateFlashcardLocal: (id: string, changes: Partial<Flashcard>) =>
-    set((state) => ({
-      flashcards: state.flashcards.map((f) => (f.id === id ? { ...f, ...changes } : f)),
-    })),
+    set((state) => {
+      const updated = state.flashcards.map((f) => (f.id === id ? { ...f, ...changes } : f));
+      const card = updated.find((f) => f.id === id);
+      if (card) schedulePush(card.pdf_id);
+      return { flashcards: updated };
+    }),
 
   reviewQueue: [],
   currentReviewIndex: 0,

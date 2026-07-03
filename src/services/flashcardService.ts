@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { callAI } from './aiService';
+import { useStore } from '../store';
 import type { Flashcard, Highlight, ReviewQuality } from '../types';
 
 const FLASHCARD_SYSTEM =
@@ -25,6 +26,14 @@ export async function generateFlashcardsForHighlights(
   highlights: Highlight[],
   onProgress?: (p: GenerationProgress) => void
 ): Promise<Flashcard[]> {
+  const { isAuthenticated, requireAuth } = useStore.getState();
+  if (!isAuthenticated) {
+    requireAuth('Sign in to generate flashcards', () => {
+      generateFlashcardsForHighlights(highlights, onProgress);
+    });
+    return [];
+  }
+
   const created: Flashcard[] = [];
 
   for (let i = 0; i < highlights.length; i++) {

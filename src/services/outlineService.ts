@@ -155,7 +155,10 @@ export async function ensureOutline(pdfId: string, doc: PDFDocumentProxy): Promi
     }
 
     let items = await extractEmbeddedOutline(doc, pdfId);
-    if (items.length === 0) {
+    // Guests get no AI outline fallback — no embedded outline just means
+    // an empty outline for them, not a sign-in prompt. Signed-in behavior
+    // is unchanged.
+    if (items.length === 0 && useStore.getState().isAuthenticated) {
       items = await generateAiOutline(doc, pdfId);
     }
     if (items.length > 0) {

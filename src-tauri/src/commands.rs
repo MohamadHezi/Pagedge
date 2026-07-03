@@ -2,6 +2,8 @@ use chrono::Utc;
 use lopdf;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -16,6 +18,7 @@ pub struct Pdf {
     pub chunk_count: Option<i64>,
     pub ingested_at: Option<String>,
     pub last_opened: Option<String>,
+    pub content_hash: Option<String>,
 }
 
 fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -85,7 +88,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
     // existing row so the frontend can deduplicate by id.
     let pdf = if rows_changed == 0 {
         conn.query_row(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash
              FROM pdfs WHERE filepath = ?1",
             rusqlite::params![filepath],
             |row| {
@@ -99,6 +102,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
                     chunk_count: row.get(6)?,
                     ingested_at: row.get(7)?,
                     last_opened: row.get(8)?,
+                    content_hash: row.get(9)?,
                 })
             },
         )
@@ -114,6 +118,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
             chunk_count: Some(0),
             ingested_at: Some(ingested_at),
             last_opened: None,
+            content_hash: None,
         }
     };
 
@@ -165,6 +170,34 @@ pub fn update_last_opened(app: AppHandle, id: String) -> Result<(), String> {
     conn.execute(
         "UPDATE pdfs SET last_opened = ?1 WHERE id = ?2",
         rusqlite::params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Streams the file in fixed-size chunks rather than reading it fully into
+// memory first — PDFs can be large and this runs on every import.
+fn hash_file_sha256(filepath: &str) -> Result<String, String> {
+    let mut file = std::fs::File::open(filepath).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[tauri::command]
+pub fn update_pdf_content_hash(app: AppHandle, id: String, filepath: String) -> Result<(), String> {
+    let content_hash = hash_file_sha256(&filepath)?;
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE pdfs SET content_hash = ?1 WHERE id = ?2",
+        rusqlite::params![content_hash, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -290,6 +323,69 @@ pub fn delete_highlight(app: AppHandle, id: String) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn update_highlight(
+    app: AppHandle,
+    id: String,
+    page: Option<i64>,
+    color: Option<String>,
+    selected_text: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    w: Option<f64>,
+    h: Option<f64>,
+    note: Option<String>,
+    rects: Option<String>,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE highlights SET
+            page          = COALESCE(?1, page),
+            color         = COALESCE(?2, color),
+            selected_text = COALESCE(?3, selected_text),
+            position_x    = COALESCE(?4, position_x),
+            position_y    = COALESCE(?5, position_y),
+            position_w    = COALESCE(?6, position_w),
+            position_h    = COALESCE(?7, position_h),
+            note          = COALESCE(?8, note),
+            rects         = COALESCE(?9, rects)
+         WHERE id = ?10",
+        rusqlite::params![page, color, selected_text, x, y, w, h, note, rects, id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, pdf_id, page, color, selected_text,
+                    position_x, position_y, position_w, position_h,
+                    note, created_at, rects
+             FROM highlights WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let highlight = stmt
+        .query_row(rusqlite::params![id], |row| {
+            let rects_str: Option<String> = row.get(11)?;
+            Ok(Highlight {
+                id: row.get(0)?,
+                pdf_id: row.get(1)?,
+                page: row.get(2)?,
+                color: row.get(3)?,
+                selected_text: row.get(4)?,
+                position_x: row.get(5)?,
+                position_y: row.get(6)?,
+                position_w: row.get(7)?,
+                position_h: row.get(8)?,
+                note: row.get(9)?,
+                created_at: row.get(10)?,
+                rects: rects_str.and_then(|s| serde_json::from_str(&s).ok()),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    serde_json::to_string(&highlight).map_err(|e| e.to_string())
 }
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
@@ -894,6 +990,28 @@ pub fn update_flashcard_review(
             next_review = ?4
          WHERE id = ?5",
         rusqlite::params![interval, ease_factor, repetitions, next_review, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let card = conn
+        .query_row(&format!("{FC_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_flashcard)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_flashcard_fields(
+    app: AppHandle,
+    id: String,
+    front: Option<String>,
+    back: Option<String>,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE flashcards SET
+            front = COALESCE(?1, front),
+            back  = COALESCE(?2, back)
+         WHERE id = ?3",
+        rusqlite::params![front, back, id],
     )
     .map_err(|e| e.to_string())?;
     let card = conn
@@ -1534,7 +1652,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash
              FROM pdfs ORDER BY ingested_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -1551,6 +1669,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
                 chunk_count: row.get(6)?,
                 ingested_at: row.get(7)?,
                 last_opened: row.get(8)?,
+                content_hash: row.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?

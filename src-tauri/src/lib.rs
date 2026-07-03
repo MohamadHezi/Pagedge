@@ -7,8 +7,9 @@ use commands::{
     get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
     get_flashcards, get_highlights, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
     open_file_dialog, read_file, rename_pdf, reveal_in_folder, set_setting, store_chunks,
-    store_outline, update_drawing_points, update_flashcard_review, update_last_opened,
-    update_note, update_pdf_ingestion_status, update_text_box,
+    store_outline, update_drawing_points, update_flashcard_fields, update_flashcard_review,
+    update_highlight, update_last_opened, update_note, update_pdf_content_hash,
+    update_pdf_ingestion_status, update_text_box,
 };
 use tauri::Manager;
 
@@ -169,7 +170,25 @@ pub fn run() {
                     FOREIGN KEY (pdf_id) REFERENCES pdfs(id)
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_outline_pdf ON outline_items(pdf_id);",
+                CREATE INDEX IF NOT EXISTS idx_outline_pdf ON outline_items(pdf_id);
+
+                CREATE TABLE IF NOT EXISTS sync_state (
+                    entity_type          TEXT NOT NULL,
+                    local_id             TEXT NOT NULL,
+                    last_synced_version  INTEGER NOT NULL DEFAULT 0,
+                    last_synced_at       TEXT,
+                    PRIMARY KEY (entity_type, local_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS pending_pdf_annotations (
+                    content_hash     TEXT PRIMARY KEY,
+                    pdf_display_name TEXT NOT NULL,
+                    highlight_count  INTEGER NOT NULL DEFAULT 0,
+                    note_count       INTEGER NOT NULL DEFAULT 0,
+                    flashcard_count  INTEGER NOT NULL DEFAULT 0,
+                    fetched_at       TEXT NOT NULL,
+                    payload_json     TEXT
+                );",
             )
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
@@ -183,6 +202,28 @@ pub fn run() {
             // Column migrations — silently no-op if column already exists
             let _ = conn.execute("ALTER TABLE highlights ADD COLUMN rects TEXT", []);
             let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN chunk_count INTEGER DEFAULT 0", []);
+
+            // ── Sync columns (Pro cross-device sync) ────────────────────────────
+            let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN content_hash TEXT", []);
+
+            let _ = conn.execute("ALTER TABLE highlights ADD COLUMN sync_version INTEGER DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE highlights ADD COLUMN deleted_at TEXT", []);
+            let _ = conn.execute("ALTER TABLE highlights ADD COLUMN server_id TEXT", []);
+            let _ = conn.execute("ALTER TABLE highlights ADD COLUMN updated_at TEXT", []);
+
+            let _ = conn.execute("ALTER TABLE notes ADD COLUMN sync_version INTEGER DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT", []);
+            let _ = conn.execute("ALTER TABLE notes ADD COLUMN server_id TEXT", []);
+
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN sync_version INTEGER DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN deleted_at TEXT", []);
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN server_id TEXT", []);
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN updated_at TEXT", []);
+
+            let _ = conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pdfs_content_hash ON pdfs(content_hash)",
+                [],
+            );
 
             // ── Deduplication migration ───────────────────────────────────────────
             // Root cause: CREATE TABLE IF NOT EXISTS never modifies existing tables,
@@ -282,9 +323,11 @@ pub fn run() {
             delete_pdf,
             rename_pdf,
             update_last_opened,
+            update_pdf_content_hash,
             add_highlight,
             get_highlights,
             delete_highlight,
+            update_highlight,
             create_note,
             get_notes,
             update_note,
@@ -310,6 +353,7 @@ pub fn run() {
             get_all_flashcards,
             delete_flashcard,
             update_flashcard_review,
+            update_flashcard_fields,
             export_annotated_pdf,
             reveal_in_folder,
             store_outline,

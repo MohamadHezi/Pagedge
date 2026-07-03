@@ -1,7 +1,7 @@
 import { useStore } from '../store';
 
 export function IconRail() {
-  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId } = useStore();
+  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId, isAuthenticated, requireAuth } = useStore();
 
   return (
     <nav className="icon-rail">
@@ -62,7 +62,11 @@ export function IconRail() {
             <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" />
           </svg>
         </button>
-        <button className="ir-btn" title="User Profile">
+        <button
+          className="ir-btn"
+          title={isAuthenticated ? "Account" : "Sign In"}
+          onClick={() => (isAuthenticated ? setSettingsPanelOpen(true) : requireAuth())}
+        >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="8" r="4" />
             <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
