@@ -357,12 +357,16 @@ interface PullResponse {
 const lastPullAtByHash = new Map<string, string>();
 
 async function pullRaw(contentHashes: string[], since: string): Promise<PullResponse> {
+  const body = { content_hashes: contentHashes, since };
   const response = await authedFetch('/sync/pull', {
     method: 'POST',
-    body: JSON.stringify({ content_hashes: contentHashes, since }),
+    body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(`sync pull failed (${response.status})`);
-  return (await response.json()) as PullResponse;
+  if (!response.ok) {
+    throw new Error(`sync pull failed (${response.status})`);
+  }
+  const data = (await response.json()) as PullResponse;
+  return data;
 }
 
 export async function pullPdf(contentHash: string): Promise<void> {
@@ -550,16 +554,22 @@ export async function checkPendingAnnotationsForHash(contentHash: string): Promi
 
   const cachedJson = await invoke<string>('get_pending_pdf_annotation', { contentHash });
   const cached = JSON.parse(cachedJson) as PendingAnnotationSummary | null;
-  if (cached && (cached.highlight_count || cached.note_count || cached.flashcard_count)) return cached;
+  if (cached && (cached.highlight_count || cached.note_count || cached.flashcard_count)) {
+    return cached;
+  }
 
   try {
     const data = await pullRaw([contentHash], new Date(0).toISOString());
     const bundle = data.pdfs[contentHash];
-    if (!bundle) return null;
+    if (!bundle) {
+      return null;
+    }
     const highlights = bundle.highlights.filter((h) => !h.deleted_at);
     const notes = bundle.notes.filter((n) => !n.deleted_at);
     const flashcards = bundle.flashcards.filter((f) => !f.deleted_at);
-    if (!highlights.length && !notes.length && !flashcards.length) return null;
+    if (!highlights.length && !notes.length && !flashcards.length) {
+      return null;
+    }
 
     const displayName = useStore.getState().pdfs.find((p) => p.content_hash === contentHash)?.filename ?? 'Untitled PDF';
     await invoke('upsert_pending_pdf_annotation', {
