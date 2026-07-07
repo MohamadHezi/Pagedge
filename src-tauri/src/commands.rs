@@ -192,7 +192,7 @@ fn hash_file_sha256(filepath: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn update_pdf_content_hash(app: AppHandle, id: String, filepath: String) -> Result<(), String> {
+pub fn update_pdf_content_hash(app: AppHandle, id: String, filepath: String) -> Result<String, String> {
     let content_hash = hash_file_sha256(&filepath)?;
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     conn.execute(
@@ -200,7 +200,307 @@ pub fn update_pdf_content_hash(app: AppHandle, id: String, filepath: String) -> 
         rusqlite::params![content_hash, id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(content_hash)
+}
+
+// ── Sync: pending PDF annotations ───────────────────────────────────────────
+// Local cache of "another device has already synced highlights/notes/
+// flashcards for this exact PDF (by content_hash), but this device doesn't
+// have the file yet (or just added it)." Populated opportunistically by
+// syncService.ts's pull cycle (see PENDING_SELECT usage below) and consumed
+// by the "N highlights available from another device" import prompt.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PendingPdfAnnotation {
+    pub content_hash: String,
+    pub pdf_display_name: String,
+    pub highlight_count: i64,
+    pub note_count: i64,
+    pub flashcard_count: i64,
+    pub fetched_at: String,
+    pub payload_json: Option<String>,
+}
+
+const PENDING_SELECT: &str = "SELECT content_hash, pdf_display_name, highlight_count, note_count, \
+    flashcard_count, fetched_at, payload_json FROM pending_pdf_annotations";
+
+fn row_to_pending(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingPdfAnnotation> {
+    Ok(PendingPdfAnnotation {
+        content_hash: row.get(0)?,
+        pdf_display_name: row.get(1)?,
+        highlight_count: row.get(2)?,
+        note_count: row.get(3)?,
+        flashcard_count: row.get(4)?,
+        fetched_at: row.get(5)?,
+        payload_json: row.get(6)?,
+    })
+}
+
+#[tauri::command]
+pub fn upsert_pending_pdf_annotation(
+    app: AppHandle,
+    content_hash: String,
+    pdf_display_name: String,
+    highlight_count: i64,
+    note_count: i64,
+    flashcard_count: i64,
+    payload_json: Option<String>,
+) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let fetched_at = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO pending_pdf_annotations
+            (content_hash, pdf_display_name, highlight_count, note_count, flashcard_count, fetched_at, payload_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(content_hash) DO UPDATE SET
+            pdf_display_name = excluded.pdf_display_name,
+            highlight_count  = excluded.highlight_count,
+            note_count       = excluded.note_count,
+            flashcard_count  = excluded.flashcard_count,
+            fetched_at       = excluded.fetched_at,
+            payload_json     = excluded.payload_json",
+        rusqlite::params![
+            content_hash, pdf_display_name, highlight_count, note_count, flashcard_count, fetched_at, payload_json
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_pending_pdf_annotation(app: AppHandle, content_hash: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let row: Option<PendingPdfAnnotation> = conn
+        .query_row(
+            &format!("{PENDING_SELECT} WHERE content_hash = ?1"),
+            rusqlite::params![content_hash],
+            row_to_pending,
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&row).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_all_pending_pdf_annotations(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(PENDING_SELECT).map_err(|e| e.to_string())?;
+    let rows: Vec<PendingPdfAnnotation> = stmt
+        .query_map([], row_to_pending)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    serde_json::to_string(&rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_pending_pdf_annotation(app: AppHandle, content_hash: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM pending_pdf_annotations WHERE content_hash = ?1",
+        rusqlite::params![content_hash],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct MaterializeHighlight {
+    id: String,
+    page: i64,
+    color: String,
+    selected_text: String,
+    position_x: f64,
+    position_y: f64,
+    position_w: f64,
+    position_h: f64,
+    rects_json: Option<String>,
+    note: Option<String>,
+    updated_at: Option<String>,
+    #[serde(default)]
+    deleted_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MaterializeNote {
+    id: String,
+    title: Option<String>,
+    content_markdown: Option<String>,
+    source_page: Option<i64>,
+    tags: Option<serde_json::Value>,
+    updated_at: Option<String>,
+    #[serde(default)]
+    deleted_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MaterializeFlashcard {
+    id: String,
+    source_highlight_id: String,
+    page: i64,
+    front: String,
+    back: String,
+    interval: f64,
+    ease_factor: f64,
+    repetitions: i64,
+    next_review: String,
+    updated_at: Option<String>,
+    #[serde(default)]
+    deleted_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MaterializePayload {
+    #[serde(default)]
+    highlights: Vec<MaterializeHighlight>,
+    #[serde(default)]
+    notes: Vec<MaterializeNote>,
+    #[serde(default)]
+    flashcards: Vec<MaterializeFlashcard>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MaterializeResult {
+    pub highlights: Vec<Highlight>,
+    pub notes: Vec<Note>,
+    pub flashcards: Vec<Flashcard>,
+}
+
+// Reads the cached payload_json for content_hash, inserts each non-deleted
+// row into the local highlights/notes/flashcards tables scoped to pdf_id
+// (reusing the server's own row id, so a later push recognizes these as
+// already-synced rather than re-creating them), then clears the pending
+// row. INSERT OR IGNORE guards against double-materialization (e.g. a
+// duplicate click) leaving no trace beyond a no-op.
+#[tauri::command]
+pub fn materialize_pending_pdf_annotations(
+    app: AppHandle,
+    content_hash: String,
+    pdf_id: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let payload_json: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM pending_pdf_annotations WHERE content_hash = ?1",
+            rusqlite::params![content_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    let payload: MaterializePayload = match payload_json {
+        Some(s) => serde_json::from_str(&s).map_err(|e| e.to_string())?,
+        None => MaterializePayload::default(),
+    };
+
+    let mut created_highlights: Vec<Highlight> = Vec::new();
+    for h in payload.highlights.into_iter().filter(|h| h.deleted_at.is_none()) {
+        let created_at = h.updated_at.clone().unwrap_or_else(|| Utc::now().to_rfc3339());
+        conn.execute(
+            "INSERT OR IGNORE INTO highlights
+             (id, pdf_id, page, color, selected_text, position_x, position_y, position_w, position_h, note, created_at, rects)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                h.id, pdf_id, h.page, h.color, h.selected_text,
+                h.position_x, h.position_y, h.position_w, h.position_h,
+                h.note, created_at, h.rects_json,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        created_highlights.push(Highlight {
+            id: h.id,
+            pdf_id: pdf_id.clone(),
+            page: h.page,
+            color: h.color,
+            selected_text: h.selected_text,
+            position_x: h.position_x,
+            position_y: h.position_y,
+            position_w: h.position_w,
+            position_h: h.position_h,
+            note: h.note,
+            created_at,
+            rects: h.rects_json.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+            updated_at: None,
+            deleted_at: None,
+        });
+    }
+
+    let mut created_notes: Vec<Note> = Vec::new();
+    for n in payload.notes.into_iter().filter(|n| n.deleted_at.is_none()) {
+        let updated_at = n.updated_at.clone().unwrap_or_else(|| Utc::now().to_rfc3339());
+        let title = n.title.unwrap_or_else(|| "Untitled".to_string());
+        let content_markdown = n.content_markdown.unwrap_or_default();
+        let tags_vec: Vec<String> = n.tags.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        let tags_json = serde_json::to_string(&tags_vec).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO notes
+             (id, title, content_markdown, folder_id, source_pdf_id, source_page, tags, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?7)",
+            rusqlite::params![n.id, title, content_markdown, pdf_id, n.source_page, tags_json, updated_at],
+        )
+        .map_err(|e| e.to_string())?;
+
+        created_notes.push(Note {
+            id: n.id,
+            title,
+            content_markdown,
+            folder_id: None,
+            source_pdf_id: Some(pdf_id.clone()),
+            source_page: n.source_page,
+            tags: tags_vec,
+            created_at: updated_at.clone(),
+            updated_at,
+            deleted_at: None,
+        });
+    }
+
+    let mut created_flashcards: Vec<Flashcard> = Vec::new();
+    for f in payload.flashcards.into_iter().filter(|f| f.deleted_at.is_none()) {
+        let updated_at = f.updated_at.clone().unwrap_or_else(|| Utc::now().to_rfc3339());
+        conn.execute(
+            "INSERT OR IGNORE INTO flashcards
+             (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            rusqlite::params![
+                f.id, f.source_highlight_id, pdf_id, f.page, f.front, f.back,
+                f.interval, f.ease_factor, f.repetitions, f.next_review, updated_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        created_flashcards.push(Flashcard {
+            id: f.id,
+            source_highlight_id: f.source_highlight_id,
+            pdf_id: pdf_id.clone(),
+            page: f.page,
+            front: f.front,
+            back: f.back,
+            interval: f.interval,
+            ease_factor: f.ease_factor,
+            repetitions: f.repetitions,
+            next_review: f.next_review,
+            created_at: updated_at.clone(),
+            updated_at,
+            deleted_at: None,
+        });
+    }
+
+    conn.execute(
+        "DELETE FROM pending_pdf_annotations WHERE content_hash = ?1",
+        rusqlite::params![content_hash],
+    )
+    .map_err(|e| e.to_string())?;
+
+    serde_json::to_string(&MaterializeResult {
+        highlights: created_highlights,
+        notes: created_notes,
+        flashcards: created_flashcards,
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -225,6 +525,34 @@ pub struct Highlight {
     pub rects: Option<Vec<HlRect>>,
     pub note: Option<String>,
     pub created_at: String,
+    pub updated_at: Option<String>,
+    pub deleted_at: Option<String>,
+}
+
+const HIGHLIGHT_SELECT: &str =
+    "SELECT id, pdf_id, page, color, selected_text,
+            position_x, position_y, position_w, position_h,
+            note, created_at, rects, updated_at, deleted_at
+     FROM highlights";
+
+fn row_to_highlight(row: &rusqlite::Row<'_>) -> rusqlite::Result<Highlight> {
+    let rects_str: Option<String> = row.get(11)?;
+    Ok(Highlight {
+        id: row.get(0)?,
+        pdf_id: row.get(1)?,
+        page: row.get(2)?,
+        color: row.get(3)?,
+        selected_text: row.get(4)?,
+        position_x: row.get(5)?,
+        position_y: row.get(6)?,
+        position_w: row.get(7)?,
+        position_h: row.get(8)?,
+        note: row.get(9)?,
+        created_at: row.get(10)?,
+        rects: rects_str.and_then(|s| serde_json::from_str(&s).ok()),
+        updated_at: row.get(12)?,
+        deleted_at: row.get(13)?,
+    })
 }
 
 #[tauri::command]
@@ -269,44 +597,28 @@ pub fn add_highlight(
         rects: rects_vec,
         note: None,
         created_at,
+        updated_at: None,
+        deleted_at: None,
     };
 
     serde_json::to_string(&highlight).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_highlights(app: AppHandle, pdf_id: String) -> Result<String, String> {
+pub fn get_highlights(app: AppHandle, pdf_id: String, include_deleted: Option<bool>) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let where_clause = if include_deleted.unwrap_or(false) {
+        "WHERE pdf_id = ?1"
+    } else {
+        "WHERE pdf_id = ?1 AND deleted_at IS NULL"
+    };
 
     let mut stmt = conn
-        .prepare(
-            "SELECT id, pdf_id, page, color, selected_text,
-                    position_x, position_y, position_w, position_h,
-                    note, created_at, rects
-             FROM highlights
-             WHERE pdf_id = ?1
-             ORDER BY page ASC, position_y DESC",
-        )
+        .prepare(&format!("{HIGHLIGHT_SELECT} {where_clause} ORDER BY page ASC, position_y DESC"))
         .map_err(|e| e.to_string())?;
 
     let highlights: Vec<Highlight> = stmt
-        .query_map(rusqlite::params![pdf_id], |row| {
-            let rects_str: Option<String> = row.get(11)?;
-            Ok(Highlight {
-                id: row.get(0)?,
-                pdf_id: row.get(1)?,
-                page: row.get(2)?,
-                color: row.get(3)?,
-                selected_text: row.get(4)?,
-                position_x: row.get(5)?,
-                position_y: row.get(6)?,
-                position_w: row.get(7)?,
-                position_h: row.get(8)?,
-                note: row.get(9)?,
-                created_at: row.get(10)?,
-                rects: rects_str.and_then(|s| serde_json::from_str(&s).ok()),
-            })
-        })
+        .query_map(rusqlite::params![pdf_id], row_to_highlight)
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -317,9 +629,10 @@ pub fn get_highlights(app: AppHandle, pdf_id: String) -> Result<String, String> 
 #[tauri::command]
 pub fn delete_highlight(app: AppHandle, id: String) -> Result<(), String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "DELETE FROM highlights WHERE id = ?1",
-        rusqlite::params![id],
+        "UPDATE highlights SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -357,32 +670,64 @@ pub fn update_highlight(
     )
     .map_err(|e| e.to_string())?;
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, pdf_id, page, color, selected_text,
-                    position_x, position_y, position_w, position_h,
-                    note, created_at, rects
-             FROM highlights WHERE id = ?1",
-        )
+    let highlight = conn
+        .query_row(&format!("{HIGHLIGHT_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_highlight)
         .map_err(|e| e.to_string())?;
-    let highlight = stmt
-        .query_row(rusqlite::params![id], |row| {
-            let rects_str: Option<String> = row.get(11)?;
-            Ok(Highlight {
-                id: row.get(0)?,
-                pdf_id: row.get(1)?,
-                page: row.get(2)?,
-                color: row.get(3)?,
-                selected_text: row.get(4)?,
-                position_x: row.get(5)?,
-                position_y: row.get(6)?,
-                position_w: row.get(7)?,
-                position_h: row.get(8)?,
-                note: row.get(9)?,
-                created_at: row.get(10)?,
-                rects: rects_str.and_then(|s| serde_json::from_str(&s).ok()),
-            })
-        })
+
+    serde_json::to_string(&highlight).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upsert_highlight(
+    app: AppHandle,
+    id: String,
+    pdf_id: String,
+    page: i64,
+    color: String,
+    selected_text: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    note: Option<String>,
+    rects: Option<String>,
+    created_at: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    // Preserve the local row's original created_at if it already exists —
+    // a server echo shouldn't reset the local creation timestamp.
+    let existing_created_at: Option<String> = conn
+        .query_row(
+            "SELECT created_at FROM highlights WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let created_at = existing_created_at.unwrap_or(created_at);
+
+    conn.execute(
+        "INSERT INTO highlights
+         (id, pdf_id, page, color, selected_text, position_x, position_y, position_w, position_h, note, created_at, rects)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            pdf_id        = excluded.pdf_id,
+            page          = excluded.page,
+            color         = excluded.color,
+            selected_text = excluded.selected_text,
+            position_x    = excluded.position_x,
+            position_y    = excluded.position_y,
+            position_w    = excluded.position_w,
+            position_h    = excluded.position_h,
+            note          = excluded.note,
+            rects         = excluded.rects",
+        rusqlite::params![id, pdf_id, page, color, selected_text, x, y, w, h, note, created_at, rects],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let highlight = conn
+        .query_row(&format!("{HIGHLIGHT_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_highlight)
         .map_err(|e| e.to_string())?;
 
     serde_json::to_string(&highlight).map_err(|e| e.to_string())
@@ -401,6 +746,7 @@ pub struct Note {
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub deleted_at: Option<String>,
 }
 
 fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
@@ -415,12 +761,13 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         tags: serde_json::from_str(&tags_str).unwrap_or_default(),
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        deleted_at: row.get(9)?,
     })
 }
 
 const NOTE_SELECT: &str =
     "SELECT id, title, content_markdown, folder_id, source_pdf_id, source_page,
-            tags, created_at, updated_at FROM notes";
+            tags, created_at, updated_at, deleted_at FROM notes";
 
 #[tauri::command]
 pub fn create_note(
@@ -452,20 +799,25 @@ pub fn create_note(
         tags: vec![],
         created_at: now.clone(),
         updated_at: now,
+        deleted_at: None,
     };
 
     serde_json::to_string(&note).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_notes(app: AppHandle, pdf_id: Option<String>) -> Result<String, String> {
+pub fn get_notes(app: AppHandle, pdf_id: Option<String>, include_deleted: Option<bool>) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let include_deleted = include_deleted.unwrap_or(false);
 
     let notes: Vec<Note> = if let Some(pid) = pdf_id {
+        let where_clause = if include_deleted {
+            "WHERE source_pdf_id = ?1"
+        } else {
+            "WHERE source_pdf_id = ?1 AND deleted_at IS NULL"
+        };
         let mut stmt = conn
-            .prepare(&format!(
-                "{NOTE_SELECT} WHERE source_pdf_id = ?1 ORDER BY updated_at DESC"
-            ))
+            .prepare(&format!("{NOTE_SELECT} {where_clause} ORDER BY updated_at DESC"))
             .map_err(|e| e.to_string())?;
         let rows: Vec<Note> = stmt
             .query_map(rusqlite::params![pid], row_to_note)
@@ -474,8 +826,9 @@ pub fn get_notes(app: AppHandle, pdf_id: Option<String>) -> Result<String, Strin
             .collect();
         rows
     } else {
+        let where_clause = if include_deleted { "" } else { "WHERE deleted_at IS NULL" };
         let mut stmt = conn
-            .prepare(&format!("{NOTE_SELECT} ORDER BY updated_at DESC"))
+            .prepare(&format!("{NOTE_SELECT} {where_clause} ORDER BY updated_at DESC"))
             .map_err(|e| e.to_string())?;
         let rows: Vec<Note> = stmt
             .query_map([], row_to_note)
@@ -527,10 +880,59 @@ pub fn update_note(
 }
 
 #[tauri::command]
+pub fn upsert_note(
+    app: AppHandle,
+    id: String,
+    title: String,
+    content_markdown: String,
+    source_pdf_id: Option<String>,
+    source_page: Option<i64>,
+    tags: Vec<String>,
+    updated_at: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tags_json = serde_json::to_string(&tags).map_err(|e| e.to_string())?;
+
+    let existing_created_at: Option<String> = conn
+        .query_row(
+            "SELECT created_at FROM notes WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let created_at = existing_created_at.unwrap_or_else(|| updated_at.clone());
+
+    conn.execute(
+        "INSERT INTO notes (id, title, content_markdown, folder_id, source_pdf_id, source_page, tags, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            title             = excluded.title,
+            content_markdown  = excluded.content_markdown,
+            source_pdf_id     = excluded.source_pdf_id,
+            source_page       = excluded.source_page,
+            tags              = excluded.tags,
+            updated_at        = excluded.updated_at",
+        rusqlite::params![id, title, content_markdown, source_pdf_id, source_page, tags_json, created_at, updated_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let note = conn
+        .query_row(&format!("{NOTE_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_note)
+        .map_err(|e| e.to_string())?;
+
+    serde_json::to_string(&note).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn delete_note(app: AppHandle, id: String) -> Result<(), String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM notes WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE notes SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -884,6 +1286,8 @@ pub struct Flashcard {
     pub repetitions: i64,
     pub next_review: String,
     pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
 }
 
 fn row_to_flashcard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Flashcard> {
@@ -899,11 +1303,13 @@ fn row_to_flashcard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Flashcard> {
         repetitions:         row.get(8)?,
         next_review:         row.get(9)?,
         created_at:          row.get(10)?,
+        updated_at:          row.get(11)?,
+        deleted_at:          row.get(12)?,
     })
 }
 
 const FC_SELECT: &str =
-    "SELECT id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at FROM flashcards";
+    "SELECT id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at, deleted_at FROM flashcards";
 
 #[tauri::command]
 pub fn add_flashcard(
@@ -922,8 +1328,8 @@ pub fn add_flashcard(
     let repetitions = 0_i64;
 
     conn.execute(
-        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)",
         rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, now],
     )
     .map_err(|e| e.to_string())?;
@@ -931,16 +1337,22 @@ pub fn add_flashcard(
     let card = Flashcard {
         id, source_highlight_id, pdf_id, page, front, back,
         interval, ease_factor, repetitions,
-        next_review: now.clone(), created_at: now,
+        next_review: now.clone(), created_at: now.clone(), updated_at: now,
+        deleted_at: None,
     };
     serde_json::to_string(&card).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_flashcards(app: AppHandle, pdf_id: String) -> Result<String, String> {
+pub fn get_flashcards(app: AppHandle, pdf_id: String, include_deleted: Option<bool>) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let where_clause = if include_deleted.unwrap_or(false) {
+        "WHERE pdf_id = ?1"
+    } else {
+        "WHERE pdf_id = ?1 AND deleted_at IS NULL"
+    };
     let mut stmt = conn
-        .prepare(&format!("{FC_SELECT} WHERE pdf_id = ?1 ORDER BY page ASC, created_at ASC"))
+        .prepare(&format!("{FC_SELECT} {where_clause} ORDER BY page ASC, created_at ASC"))
         .map_err(|e| e.to_string())?;
     let cards: Vec<Flashcard> = stmt
         .query_map(rusqlite::params![pdf_id], row_to_flashcard)
@@ -954,7 +1366,7 @@ pub fn get_flashcards(app: AppHandle, pdf_id: String) -> Result<String, String> 
 pub fn get_all_flashcards(app: AppHandle) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare(&format!("{FC_SELECT} ORDER BY next_review ASC"))
+        .prepare(&format!("{FC_SELECT} WHERE deleted_at IS NULL ORDER BY next_review ASC"))
         .map_err(|e| e.to_string())?;
     let cards: Vec<Flashcard> = stmt
         .query_map([], row_to_flashcard)
@@ -967,8 +1379,12 @@ pub fn get_all_flashcards(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn delete_flashcard(app: AppHandle, id: String) -> Result<(), String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM flashcards WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE flashcards SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -982,14 +1398,16 @@ pub fn update_flashcard_review(
     next_review: String,
 ) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE flashcards SET
             interval    = ?1,
             ease_factor = ?2,
             repetitions = ?3,
-            next_review = ?4
-         WHERE id = ?5",
-        rusqlite::params![interval, ease_factor, repetitions, next_review, id],
+            next_review = ?4,
+            updated_at  = ?5
+         WHERE id = ?6",
+        rusqlite::params![interval, ease_factor, repetitions, next_review, now, id],
     )
     .map_err(|e| e.to_string())?;
     let card = conn
@@ -1017,6 +1435,59 @@ pub fn update_flashcard_fields(
     let card = conn
         .query_row(&format!("{FC_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_flashcard)
         .map_err(|e| e.to_string())?;
+    serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upsert_flashcard(
+    app: AppHandle,
+    id: String,
+    source_highlight_id: String,
+    pdf_id: String,
+    page: i64,
+    front: String,
+    back: String,
+    interval: f64,
+    ease_factor: f64,
+    repetitions: i64,
+    next_review: String,
+    created_at: String,
+    updated_at: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let existing_created_at: Option<String> = conn
+        .query_row(
+            "SELECT created_at FROM flashcards WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let created_at = existing_created_at.unwrap_or(created_at);
+
+    conn.execute(
+        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            source_highlight_id = excluded.source_highlight_id,
+            pdf_id               = excluded.pdf_id,
+            page                 = excluded.page,
+            front                = excluded.front,
+            back                 = excluded.back,
+            interval             = excluded.interval,
+            ease_factor          = excluded.ease_factor,
+            repetitions          = excluded.repetitions,
+            next_review          = excluded.next_review,
+            updated_at           = excluded.updated_at",
+        rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let card = conn
+        .query_row(&format!("{FC_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_flashcard)
+        .map_err(|e| e.to_string())?;
+
     serde_json::to_string(&card).map_err(|e| e.to_string())
 }
 
@@ -1419,31 +1890,10 @@ pub fn export_annotated_pdf(
     // Load annotations from DB — collect before stmt drops to satisfy borrow checker
     let highlights: Vec<Highlight> = if include_highlights {
         let mut stmt = conn
-            .prepare(
-                "SELECT id, pdf_id, page, color, selected_text,
-                        position_x, position_y, position_w, position_h,
-                        note, created_at, rects
-                 FROM highlights WHERE pdf_id = ?1",
-            )
+            .prepare(&format!("{HIGHLIGHT_SELECT} WHERE pdf_id = ?1 AND deleted_at IS NULL"))
             .map_err(|e| e.to_string())?;
         let v: Vec<Highlight> = stmt
-            .query_map(rusqlite::params![pdf_id], |row| {
-                let rects_str: Option<String> = row.get(11)?;
-                Ok(Highlight {
-                    id: row.get(0)?,
-                    pdf_id: row.get(1)?,
-                    page: row.get(2)?,
-                    color: row.get(3)?,
-                    selected_text: row.get(4)?,
-                    position_x: row.get(5)?,
-                    position_y: row.get(6)?,
-                    position_w: row.get(7)?,
-                    position_h: row.get(8)?,
-                    note: row.get(9)?,
-                    created_at: row.get(10)?,
-                    rects: rects_str.and_then(|s| serde_json::from_str(&s).ok()),
-                })
-            })
+            .query_map(rusqlite::params![pdf_id], row_to_highlight)
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();

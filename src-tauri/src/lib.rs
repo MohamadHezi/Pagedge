@@ -6,10 +6,12 @@ use commands::{
     delete_note, delete_pdf, delete_text_box, export_annotated_pdf, extract_pdf_text,
     get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
     get_flashcards, get_highlights, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
-    open_file_dialog, read_file, rename_pdf, reveal_in_folder, set_setting, store_chunks,
-    store_outline, update_drawing_points, update_flashcard_fields, update_flashcard_review,
-    update_highlight, update_last_opened, update_note, update_pdf_content_hash,
-    update_pdf_ingestion_status, update_text_box,
+    delete_pending_pdf_annotation, get_all_pending_pdf_annotations, get_pending_pdf_annotation,
+    materialize_pending_pdf_annotations, open_file_dialog, read_file, rename_pdf,
+    reveal_in_folder, set_setting, store_chunks, store_outline, update_drawing_points,
+    update_flashcard_fields, update_flashcard_review, update_highlight, update_last_opened,
+    update_note, update_pdf_content_hash, update_pdf_ingestion_status, update_text_box,
+    upsert_flashcard, upsert_highlight, upsert_note, upsert_pending_pdf_annotation,
 };
 use tauri::Manager;
 
@@ -219,6 +221,9 @@ pub fn run() {
             let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN deleted_at TEXT", []);
             let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN server_id TEXT", []);
             let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN updated_at TEXT", []);
+            // Backfill rows created before updated_at existed so the Flashcard
+            // struct's non-nullable updated_at field never hits a NULL row.
+            let _ = conn.execute("UPDATE flashcards SET updated_at = created_at WHERE updated_at IS NULL", []);
 
             let _ = conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pdfs_content_hash ON pdfs(content_hash)",
@@ -328,9 +333,11 @@ pub fn run() {
             get_highlights,
             delete_highlight,
             update_highlight,
+            upsert_highlight,
             create_note,
             get_notes,
             update_note,
+            upsert_note,
             delete_note,
             extract_pdf_text,
             store_chunks,
@@ -354,10 +361,16 @@ pub fn run() {
             delete_flashcard,
             update_flashcard_review,
             update_flashcard_fields,
+            upsert_flashcard,
             export_annotated_pdf,
             reveal_in_folder,
             store_outline,
             get_outline,
+            upsert_pending_pdf_annotation,
+            get_pending_pdf_annotation,
+            get_all_pending_pdf_annotations,
+            delete_pending_pdf_annotation,
+            materialize_pending_pdf_annotations,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
