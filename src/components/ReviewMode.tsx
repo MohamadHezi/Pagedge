@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { gradeFlashcard } from "../services/flashcardService";
+import { schedulePush } from "../services/syncService";
 import type { ReviewQuality } from "../types";
 
 export function ReviewMode() {
@@ -61,6 +62,14 @@ export function ReviewMode() {
       } catch (err) {
         console.error("[review] failed to persist grade", err);
       }
+      // updateFlashcardLocal only schedules a push if card.id exists in
+      // state.flashcards, which is scoped to whichever PDF is currently
+      // open — the global review queue (LibrarySidebar's "Flashcard
+      // Documents" -> get_all_flashcards -> startReview) can grade cards
+      // belonging to PDFs that aren't loaded into the store at all, so that
+      // push would silently never fire. Schedule directly off the card
+      // itself, which always carries the right pdf_id regardless of source.
+      schedulePush(card.pdf_id);
       advanceReview();
     },
     [card, updateFlashcardLocal, advanceReview]

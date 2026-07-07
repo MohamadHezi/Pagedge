@@ -3270,6 +3270,118 @@
   flex-shrink: 0;
 }
 
+/* ── Sync: cross-device import banner ── */
+.sync-import-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--accent-container);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.sync-import-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.sync-import-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.sync-import-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sync-import-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: break-word;
+}
+
+.sync-import-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.sync-import-btn,
+.sync-import-dismiss {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.sync-import-btn {
+  background: var(--accent);
+  color: var(--bg-container-lowest);
+  border: none;
+}
+
+.sync-import-btn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.sync-import-dismiss {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.sync-import-dismiss:hover:not(:disabled) {
+  color: var(--text-secondary);
+  border-color: var(--text-muted);
+}
+
+.sync-import-btn:disabled,
+.sync-import-dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Library: "Synced Elsewhere" remote-only PDF indicator ── */
+.pdf-item--remote {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.pdf-item--remote:hover {
+  background: transparent;
+}
+
+.pdf-item--remote .pdf-icon {
+  color: var(--text-muted);
+}
+
+.pdf-remote-badge {
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--bg-container-low);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Section gap rule — between sections within the nav-scroll area
    Each section is separated by 2px via gap on nav-scroll, which shows
    the --bg-surface (body) through as a dark channel line. */

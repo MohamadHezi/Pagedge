@@ -16,7 +16,7 @@ import { FeedbackModal } from "./components/FeedbackModal";
 import { useStore } from "./store";
 import { checkForUpdates } from "./services/updateService";
 import { resendConfirmation } from "./services/authService";
-import { pullAllOnForeground } from "./services/syncService";
+import { pullAllOnForeground, refreshRemoteOnlyPdfs } from "./services/syncService";
 import "./App.css";
 
 // Persisted (survives app restarts, unlike a ref) so that if the deep-link
@@ -47,6 +47,7 @@ function App() {
     loadAiSettings().catch(console.error);
     initAuth();
     checkForUpdates();
+    refreshRemoteOnlyPdfs().catch(console.error);
   }, [loadPdfs, loadAiSettings, initAuth]);
 
   // pagedge://stripe-success / pagedge://stripe-cancel — fired when Stripe

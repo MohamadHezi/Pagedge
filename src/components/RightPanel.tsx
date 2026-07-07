@@ -199,9 +199,10 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
   const saveTags = useCallback(
     async (newTags: string[]) => {
       setLocalTags(newTags);
-      storeUpdateNote(note.id, { tags: newTags });
       try {
-        await invoke<string>("update_note", { id: note.id, tags: newTags });
+        const json = await invoke<string>("update_note", { id: note.id, tags: newTags });
+        const updated = JSON.parse(json) as Note;
+        storeUpdateNote(note.id, { tags: updated.tags, updated_at: updated.updated_at });
       } catch (err) {
         console.error("update_note (tags) failed:", err);
       }

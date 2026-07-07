@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { ingestPdf } from "../services/ingestionService";
+import { materializePendingAnnotations, dismissPendingAnnotations } from "../services/syncService";
 import { OutlineSection } from "./OutlinePanel";
 import type { Flashcard } from "../types";
 
@@ -9,8 +10,27 @@ export function LibrarySidebar() {
   const {
     pdfs, selectedPdfId, selectPdf, leftPanelOpen,
     ingestionStatus, isModelLoading, addPdf, deletePdf, renamePdf,
-    startReview,
+    startReview, pendingImportPrompt, remoteOnlyPdfs,
   } = useStore();
+
+  const [isImporting, setIsImporting] = useState(false);
+
+  const handleImportPending = async () => {
+    if (!pendingImportPrompt || isImporting) return;
+    setIsImporting(true);
+    try {
+      await materializePendingAnnotations(pendingImportPrompt.contentHash, pendingImportPrompt.pdfId);
+    } catch (err) {
+      console.error("Failed to import synced annotations:", err);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleDismissPending = () => {
+    if (!pendingImportPrompt) return;
+    dismissPendingAnnotations(pendingImportPrompt.contentHash).catch(console.error);
+  };
 
   // ── Local interaction state ───────────────────────────────────────────────
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -121,6 +141,33 @@ export function LibrarySidebar() {
         <div className="nav-model-banner">
           <span className="nav-model-spinner" />
           Downloading AI model…
+        </div>
+      )}
+
+      {/* Cross-device sync: annotations available for a just-added PDF */}
+      {pendingImportPrompt && (
+        <div className="sync-import-banner">
+          <svg className="sync-import-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
+            <polyline points="12 12 12 21" />
+            <polyline points="9 18 12 21 15 18" />
+          </svg>
+          <div className="sync-import-copy">
+            <span className="sync-import-title">Annotations available from another device</span>
+            <span className="sync-import-detail">
+              {[
+                pendingImportPrompt.highlightCount ? `${pendingImportPrompt.highlightCount} highlight${pendingImportPrompt.highlightCount === 1 ? "" : "s"}` : null,
+                pendingImportPrompt.noteCount ? `${pendingImportPrompt.noteCount} note${pendingImportPrompt.noteCount === 1 ? "" : "s"}` : null,
+                pendingImportPrompt.flashcardCount ? `${pendingImportPrompt.flashcardCount} flashcard${pendingImportPrompt.flashcardCount === 1 ? "" : "s"}` : null,
+              ].filter(Boolean).join(", ")} for {pendingImportPrompt.displayName}
+            </span>
+          </div>
+          <div className="sync-import-actions">
+            <button className="sync-import-dismiss" onClick={handleDismissPending} disabled={isImporting}>Dismiss</button>
+            <button className="sync-import-btn" onClick={handleImportPending} disabled={isImporting}>
+              {isImporting ? "Importing…" : "Import"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -277,6 +324,37 @@ export function LibrarySidebar() {
             </ul>
           )}
         </div>
+
+        {/* Section 2b — SYNCED ELSEWHERE — PDFs known to the account (per the
+            /sync/manifest) but not present in this device's local library. */}
+        {remoteOnlyPdfs.length > 0 && (
+          <div className="nav-section">
+            <div className="nav-section-header">
+              <svg className="nav-section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
+              </svg>
+              <span className="nav-section-title">Synced Elsewhere</span>
+            </div>
+            <ul className="pdf-list">
+              {remoteOnlyPdfs.map((rp) => {
+                const total = rp.counts.highlights + rp.counts.notes + rp.counts.flashcards;
+                return (
+                  <li
+                    key={rp.content_hash}
+                    className="pdf-item pdf-item--remote"
+                    title={`${rp.display_name ?? "Untitled PDF"} — synced from another device. Add this exact file locally to import it.`}
+                  >
+                    <svg className="pdf-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
+                    </svg>
+                    <span className="pdf-name">{rp.display_name ?? "Untitled PDF"}</span>
+                    <span className="pdf-remote-badge">{total}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
 
         {/* Section 3 — QUICK VIEWS */}
         <div className="nav-section">
