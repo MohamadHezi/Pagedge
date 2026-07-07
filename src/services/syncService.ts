@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
-import type { Highlight, Note, Flashcard } from '../types';
+import type { Highlight, Note, Flashcard, HlRect } from '../types';
 import { API_BASE_URL, loadSession, refreshSession } from './authService';
 
 // ── Sync entity shape ──────────────────────────────────────────────────────
@@ -10,49 +10,177 @@ import { API_BASE_URL, loadSession, refreshSession } from './authService';
 // updated_at/created_at timestamp (ms since epoch). This is monotonic for
 // any single row's edit history, which is all last-write-wins needs — it
 // just isn't a dedicated counter the backend could use for anything fancier.
-interface SyncEntity {
-  id: string;
-  sync_version: number;
-  updated_at: string;
-  [key: string]: unknown;
-}
-
-type EntityKind = 'highlights' | 'notes' | 'flashcards';
-
-interface PushEntities {
-  highlights: SyncEntity[];
-  notes: SyncEntity[];
-  flashcards: SyncEntity[];
-}
-
-interface PushResponse {
-  // Assumed shape: server's authoritative copy of any item it rejected
-  // (its sync_version wasn't newer than what the server already had),
-  // grouped the same way as the request payload.
-  rejected?: Partial<PushEntities>;
-}
-
-interface PullResponse {
-  changed?: Partial<PushEntities>;
-  // Counts for synced content_hashes under the account not present in
-  // the pull request — surfaced so callers can notice PDFs synced from
-  // another device that don't exist locally yet.
-  unrequested?: Array<{ content_hash: string; counts: Record<string, number> }>;
-}
-
-interface ManifestEntry {
-  content_hash: string;
-  counts: Record<string, number>;
-  updated_at: string;
-}
-
 function versionOf(timestamp: string): number {
   const ms = Date.parse(timestamp);
   return Number.isFinite(ms) ? ms : Date.now();
 }
 
-function toSyncEntity(row: { id: string }, updatedAt: string): SyncEntity {
-  return { ...row, sync_version: versionOf(updatedAt), updated_at: updatedAt };
+// ── Server row shapes (pagedge-backend/app/api/sync/*) ─────────────────────
+// These mirror HIGHLIGHT_FIELDS/NOTE_FIELDS/FLASHCARD_FIELDS in
+// pagedge-backend/app/api/sync/push/route.ts. The server has no concept of
+// a local pdf_id — rows are scoped by synced_pdf_id — so pdf_id is threaded
+// through separately wherever a server row is converted back to a local row.
+interface ServerHighlight {
+  id: string;
+  sync_version: number;
+  page: number;
+  color: string;
+  selected_text: string;
+  position_x: number;
+  position_y: number;
+  position_w: number;
+  position_h: number;
+  rects_json: string | null;
+  note: string | null;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+interface ServerNote {
+  id: string;
+  sync_version: number;
+  title: string;
+  content_markdown: string;
+  source_page: number | null;
+  tags: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+interface ServerFlashcard {
+  id: string;
+  sync_version: number;
+  source_highlight_id: string;
+  page: number;
+  front: string;
+  back: string;
+  interval: number;
+  ease_factor: number;
+  repetitions: number;
+  next_review: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+interface ServerEntities {
+  highlights: ServerHighlight[];
+  notes: ServerNote[];
+  flashcards: ServerFlashcard[];
+}
+
+function toServerHighlight(h: Highlight): ServerHighlight {
+  // Highlights have no in-place edit path — created_at was previously used
+  // as a stable version anchor. A delete now bumps the local updated_at
+  // column (see delete_highlight in commands.rs), so the tombstone push
+  // carries a strictly newer sync_version than the original create push —
+  // without this, the backend's `existing.sync_version >= syncVersion`
+  // gate would reject every delete as "not newer" and it would never sync.
+  const versionAnchor = h.updated_at ?? h.created_at;
+  return {
+    id: h.id,
+    sync_version: versionOf(versionAnchor),
+    page: h.page,
+    color: h.color,
+    selected_text: h.selected_text,
+    position_x: h.position_x,
+    position_y: h.position_y,
+    position_w: h.position_w,
+    position_h: h.position_h,
+    rects_json: h.rects ? JSON.stringify(h.rects) : null,
+    note: h.note,
+    updated_at: versionAnchor,
+    deleted_at: h.deleted_at,
+  };
+}
+
+function toServerNote(n: Note): ServerNote {
+  return {
+    id: n.id,
+    sync_version: versionOf(n.updated_at),
+    title: n.title,
+    content_markdown: n.content_markdown,
+    source_page: n.source_page,
+    tags: JSON.stringify(n.tags),
+    updated_at: n.updated_at,
+    deleted_at: n.deleted_at,
+  };
+}
+
+function toServerFlashcard(f: Flashcard): ServerFlashcard {
+  return {
+    id: f.id,
+    sync_version: versionOf(f.updated_at),
+    source_highlight_id: f.source_highlight_id,
+    page: f.page,
+    front: f.front,
+    back: f.back,
+    interval: f.interval,
+    ease_factor: f.ease_factor,
+    repetitions: f.repetitions,
+    next_review: f.next_review,
+    updated_at: f.updated_at,
+    deleted_at: f.deleted_at,
+  };
+}
+
+function fromServerHighlight(row: ServerHighlight, pdfId: string): Highlight {
+  let rects: HlRect[] | null = null;
+  if (row.rects_json) {
+    try { rects = JSON.parse(row.rects_json); } catch { rects = null; }
+  }
+  return {
+    id: row.id,
+    pdf_id: pdfId,
+    page: row.page,
+    color: row.color as Highlight['color'],
+    selected_text: row.selected_text,
+    position_x: row.position_x,
+    position_y: row.position_y,
+    position_w: row.position_w,
+    position_h: row.position_h,
+    rects,
+    note: row.note,
+    created_at: row.updated_at,
+    updated_at: row.updated_at,
+    deleted_at: null,
+  };
+}
+
+function fromServerNote(row: ServerNote, pdfId: string): Note {
+  let tags: string[] = [];
+  if (row.tags) {
+    try { tags = JSON.parse(row.tags); } catch { tags = []; }
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    content_markdown: row.content_markdown,
+    folder_id: null,
+    source_pdf_id: pdfId,
+    source_page: row.source_page,
+    tags,
+    created_at: row.updated_at,
+    updated_at: row.updated_at,
+    deleted_at: null,
+  };
+}
+
+function fromServerFlashcard(row: ServerFlashcard, pdfId: string): Flashcard {
+  return {
+    id: row.id,
+    source_highlight_id: row.source_highlight_id,
+    pdf_id: pdfId,
+    page: row.page,
+    front: row.front,
+    back: row.back,
+    interval: row.interval,
+    ease_factor: row.ease_factor,
+    repetitions: row.repetitions,
+    next_review: row.next_review,
+    created_at: row.updated_at,
+    updated_at: row.updated_at,
+    deleted_at: null,
+  };
 }
 
 // ── Auth/tier gate ──────────────────────────────────────────────────────────
@@ -133,60 +261,157 @@ export function schedulePush(pdfId: string): void {
   );
 }
 
+interface PushResult { id: string; status: 'accepted' | 'rejected'; error?: string; server?: Record<string, unknown> }
+interface PushResponse {
+  synced_pdf_id: string;
+  content_hash: string;
+  results: { highlights: PushResult[]; notes: PushResult[]; flashcards: PushResult[] };
+}
+
+// pushPdf's content_hash guard (below) means a push scheduled just after a
+// freshly-imported PDF, before its hash finishes computing, would otherwise
+// be dropped forever. Track it here and retry once the hash resolves — see
+// retryPushIfPending, called from store/index.ts's update_pdf_content_hash
+// callbacks (addPdf and the loadPdfs backfill loop).
+const pushesAwaitingContentHash = new Set<string>();
+
+export function retryPushIfPending(pdfId: string): void {
+  if (!pushesAwaitingContentHash.has(pdfId)) return;
+  pushesAwaitingContentHash.delete(pdfId);
+  pushPdf(pdfId).catch((err) => {
+    if (err instanceof Error && err.message === 'sync_requires_pro') return;
+    console.error('[sync] retry push after content_hash resolved failed', err);
+  });
+}
+
+// Reads highlights/notes/flashcards for pdfId directly from SQLite instead
+// of the Zustand store — the store's arrays only ever hold whichever PDF
+// is currently open (selectPdf replaces them on switch), so a push
+// targeting a pdfId the user has since navigated away from would otherwise
+// see stale/empty data. These Tauri commands are already scoped by pdf_id
+// and work regardless of what's selected in the UI.
+async function loadEntitiesForPush(pdfId: string): Promise<ServerEntities> {
+  const [highlightsJson, notesJson, flashcardsJson] = await Promise.all([
+    invoke<string>('get_highlights', { pdfId, includeDeleted: true }),
+    invoke<string>('get_notes', { pdfId, includeDeleted: true }),
+    invoke<string>('get_flashcards', { pdfId, includeDeleted: true }),
+  ]);
+  const highlights: Highlight[] = JSON.parse(highlightsJson);
+  const notes: Note[] = JSON.parse(notesJson);
+  const flashcards: Flashcard[] = JSON.parse(flashcardsJson);
+  return {
+    highlights: highlights.map(toServerHighlight),
+    notes: notes.map(toServerNote),
+    flashcards: flashcards.map(toServerFlashcard),
+  };
+}
+
 export async function pushPdf(pdfId: string): Promise<void> {
   requireProOrThrow();
 
-  const { pdfs, selectedPdfId, highlights, notes, flashcards } = useStore.getState();
-  const pdf = pdfs.find((p) => p.id === pdfId);
-  if (!pdf?.content_hash) return; // content hash not computed yet — nothing to key the push on
+  const pdf = useStore.getState().pdfs.find((p) => p.id === pdfId);
+  if (!pdf?.content_hash) {
+    // Content hash not computed yet — queue for retry instead of dropping
+    // this push forever; retryPushIfPending fires it once the hash lands.
+    pushesAwaitingContentHash.add(pdfId);
+    return;
+  }
+  pushesAwaitingContentHash.delete(pdfId);
 
-  // highlights/notes/flashcards in the store only reflect whichever PDF is
-  // currently open (selectPdf replaces them on switch), so a push only has
-  // real data to send when it targets that PDF.
-  if (selectedPdfId !== pdfId) return;
-
-  const entities: PushEntities = {
-    highlights: highlights
-      .filter((h) => h.pdf_id === pdfId)
-      .map((h: Highlight) => toSyncEntity(h, h.created_at)),
-    notes: notes
-      .filter((n) => n.source_pdf_id === pdfId)
-      .map((n: Note) => toSyncEntity(n, n.updated_at)),
-    flashcards: flashcards
-      .filter((f) => f.pdf_id === pdfId)
-      .map((f: Flashcard) => toSyncEntity(f, f.created_at)),
-  };
-
+  const entities = await loadEntitiesForPush(pdfId);
   if (!entities.highlights.length && !entities.notes.length && !entities.flashcards.length) return;
 
   await withRetry(async () => {
     const response = await authedFetch('/sync/push', {
       method: 'POST',
-      body: JSON.stringify({ content_hash: pdf.content_hash, entities }),
+      body: JSON.stringify({ content_hash: pdf.content_hash, display_name: pdf.filename, entities }),
     });
     if (!response.ok) throw new Error(`sync push failed (${response.status})`);
     const data = (await response.json().catch(() => ({}))) as PushResponse;
-    if (data.rejected) applyServerCopies(data.rejected);
+
+    for (const r of data.results?.highlights ?? []) {
+      if (r.status === 'rejected' && r.server) applyServerHighlight(r.server as unknown as ServerHighlight, pdfId);
+    }
+    for (const r of data.results?.notes ?? []) {
+      if (r.status === 'rejected' && r.server) applyServerNote(r.server as unknown as ServerNote, pdfId);
+    }
+    for (const r of data.results?.flashcards ?? []) {
+      if (r.status === 'rejected' && r.server) applyServerFlashcard(r.server as unknown as ServerFlashcard, pdfId);
+    }
   });
 }
 
 // ── Pull ──────────────────────────────────────────────────────────────────
+interface SyncedPdfSummary {
+  content_hash: string;
+  display_name: string | null;
+  counts: { highlights: number; notes: number; flashcards: number };
+  updated_at: string;
+}
+
+interface PullResponse {
+  pdfs: Record<string, { synced_pdf_id: string; highlights: ServerHighlight[]; notes: ServerNote[]; flashcards: ServerFlashcard[] }>;
+  other_synced: SyncedPdfSummary[];
+}
+
 const lastPullAtByHash = new Map<string, string>();
+
+async function pullRaw(contentHashes: string[], since: string): Promise<PullResponse> {
+  const response = await authedFetch('/sync/pull', {
+    method: 'POST',
+    body: JSON.stringify({ content_hashes: contentHashes, since }),
+  });
+  if (!response.ok) throw new Error(`sync pull failed (${response.status})`);
+  return (await response.json()) as PullResponse;
+}
 
 export async function pullPdf(contentHash: string): Promise<void> {
   requireProOrThrow();
 
+  const pdf = useStore.getState().pdfs.find((p) => p.content_hash === contentHash);
+  if (!pdf) return;
+
   const since = lastPullAtByHash.get(contentHash) ?? new Date(0).toISOString();
 
   await withRetry(async () => {
-    const response = await authedFetch('/sync/pull', {
-      method: 'POST',
-      body: JSON.stringify({ content_hashes: [contentHash], since }),
-    });
-    if (!response.ok) throw new Error(`sync pull failed (${response.status})`);
-    const data = (await response.json().catch(() => ({}))) as PullResponse;
-    if (data.changed) applyServerCopies(data.changed);
-    lastPullAtByHash.set(contentHash, new Date().toISOString());
+    const data = await pullRaw([contentHash], since);
+    const bundle = data.pdfs[contentHash];
+
+    // The next cursor must be derived from server-stamped row data, not the
+    // client clock — client/server clock skew would otherwise permanently
+    // skip any row whose updated_at falls after a fast local clock's "now".
+    //
+    // Rows within bundle.highlights/notes/flashcards aren't guaranteed to
+    // arrive in updated_at order, so if any row in the batch fails to
+    // persist we don't advance the cursor at all this cycle rather than
+    // capping at the highest *successful* row — a later-arriving success
+    // with a newer timestamp than an earlier failure would otherwise push
+    // the cursor past the failed row and it would never be retried. Only
+    // once every row in the batch has been confirmed persisted do we know
+    // the true max updated_at is safe to use as the next `since`.
+    let maxRowUpdatedAt: string | null = null;
+    let allPersisted = true;
+
+    const track = (updatedAt: string, persisted: boolean) => {
+      if (!persisted) allPersisted = false;
+      if (maxRowUpdatedAt === null || versionOf(updatedAt) > versionOf(maxRowUpdatedAt)) {
+        maxRowUpdatedAt = updatedAt;
+      }
+    };
+
+    if (bundle) {
+      for (const row of bundle.highlights) track(row.updated_at, await applyServerHighlight(row, pdf.id));
+      for (const row of bundle.notes) track(row.updated_at, await applyServerNote(row, pdf.id));
+      for (const row of bundle.flashcards) track(row.updated_at, await applyServerFlashcard(row, pdf.id));
+    }
+
+    if (allPersisted && maxRowUpdatedAt !== null) {
+      lastPullAtByHash.set(contentHash, maxRowUpdatedAt);
+    }
+    // else: leave the cursor at `since` so the next pull re-fetches this
+    // entire batch, including whichever row(s) failed to persist.
+
+    cachePendingFromSummaries(data.other_synced).catch((err) => console.error('[sync] pending cache refresh failed', err));
   });
 }
 
@@ -199,7 +424,6 @@ export async function pullAllOnForeground(): Promise<void> {
   const hashes = Array.from(
     new Set(useStore.getState().pdfs.map((p) => p.content_hash).filter((h): h is string => !!h))
   );
-  if (!hashes.length) return;
 
   for (const hash of hashes) {
     try {
@@ -208,16 +432,44 @@ export async function pullAllOnForeground(): Promise<void> {
       console.error('[sync] foreground pull failed', hash, err);
     }
   }
+
+  // Even with no local PDFs synced yet, still refresh the "known to the
+  // account but not present locally" list so the library badge stays current.
+  if (!hashes.length) {
+    try {
+      const data = await pullRaw([], new Date(0).toISOString());
+      await cachePendingFromSummaries(data.other_synced);
+    } catch (err) {
+      console.error('[sync] foreground manifest refresh failed', err);
+    }
+  }
+
+  await refreshRemoteOnlyPdfs();
 }
 
 // ── Manifest ─────────────────────────────────────────────────────────────
-export async function getManifest(): Promise<ManifestEntry[]> {
+export async function getManifest(): Promise<SyncedPdfSummary[]> {
   requireProOrThrow();
   return withRetry(async () => {
     const response = await authedFetch('/sync/manifest', { method: 'GET' });
     if (!response.ok) throw new Error(`sync manifest failed (${response.status})`);
-    return (await response.json()) as ManifestEntry[];
+    const data = (await response.json()) as { pdfs: SyncedPdfSummary[] };
+    return data.pdfs;
   });
+}
+
+// Refreshes the store's list of PDFs known to the account (via the manifest)
+// that aren't present in the local library yet — drives the library-level
+// "synced elsewhere" indicator.
+export async function refreshRemoteOnlyPdfs(): Promise<void> {
+  try {
+    const manifest = await getManifest();
+    const localHashes = new Set(useStore.getState().pdfs.map((p) => p.content_hash).filter(Boolean));
+    useStore.getState().setRemoteOnlyPdfs(manifest.filter((m) => !localHashes.has(m.content_hash)));
+  } catch (err) {
+    if (err instanceof Error && (err.message === 'sync_requires_pro' || err.message === 'Not authenticated')) return;
+    console.error('[sync] manifest refresh failed', err);
+  }
 }
 
 // ── Unlink ───────────────────────────────────────────────────────────────
@@ -232,105 +484,277 @@ export async function unlinkPdf(contentHash: string): Promise<void> {
   lastPullAtByHash.delete(contentHash);
 }
 
-// ── Conflict resolution ─────────────────────────────────────────────────
-// Last-write-wins by updated_at: the server only ever hands back rows in a
-// push rejection or pull response because its copy's version is >= ours, so
-// applying it unconditionally is correct — the only per-row decision left is
-// whether the server's version is actually newer than the local one, to
-// avoid clobbering an in-flight local edit with a stale server echo.
-function applyServerCopies(entities: Partial<PushEntities>): void {
-  if (entities.highlights?.length) applyKind('highlights', entities.highlights);
-  if (entities.notes?.length) applyKind('notes', entities.notes);
-  if (entities.flashcards?.length) applyKind('flashcards', entities.flashcards);
-}
+// ── Pending PDF annotations (cross-device import prompt) ────────────────
+// "other_synced" (from pull) / the manifest only carry counts — enough for
+// the library badge, but not enough to materialize instantly on import. For
+// any such PDF not present locally, opportunistically fetch its full
+// payload and cache it in SQLite (pending_pdf_annotations) so the "Import"
+// action in the add-PDF prompt is instant and works offline once cached.
+const PENDING_REFRESH_THROTTLE_MS = 6 * 60 * 60 * 1000; // 6h
+const MAX_PENDING_FETCHES_PER_CYCLE = 10;
 
-function applyKind(kind: EntityKind, rows: SyncEntity[]): void {
-  for (const row of rows) {
-    switch (kind) {
-      case 'highlights':
-        applyHighlight(row as unknown as Highlight & SyncEntity);
-        break;
-      case 'notes':
-        applyNote(row as unknown as Note & SyncEntity);
-        break;
-      case 'flashcards':
-        applyFlashcard(row as unknown as Flashcard & SyncEntity);
-        break;
+async function cachePendingFromSummaries(summaries: SyncedPdfSummary[]): Promise<void> {
+  if (!summaries.length) return;
+  const localHashes = new Set(useStore.getState().pdfs.map((p) => p.content_hash).filter(Boolean));
+  const candidates = summaries.filter((s) => !localHashes.has(s.content_hash)).slice(0, MAX_PENDING_FETCHES_PER_CYCLE);
+
+  for (const summary of candidates) {
+    try {
+      await fetchAndCachePendingAnnotations(summary.content_hash, summary.display_name);
+    } catch (err) {
+      console.error('[sync] failed to cache pending annotations', summary.content_hash, err);
     }
   }
 }
 
-function isNewer(localUpdatedAt: string | undefined, serverRow: SyncEntity): boolean {
-  if (!localUpdatedAt) return true;
-  return versionOf(serverRow.updated_at) > versionOf(localUpdatedAt);
+async function fetchAndCachePendingAnnotations(contentHash: string, displayName: string | null, force = false): Promise<void> {
+  if (!force) {
+    const existingJson = await invoke<string>('get_pending_pdf_annotation', { contentHash });
+    const existing = JSON.parse(existingJson) as { fetched_at: string } | null;
+    if (existing && Date.now() - Date.parse(existing.fetched_at) < PENDING_REFRESH_THROTTLE_MS) return;
+  }
+
+  const data = await pullRaw([contentHash], new Date(0).toISOString());
+  const bundle = data.pdfs[contentHash];
+  const highlights = (bundle?.highlights ?? []).filter((h) => !h.deleted_at);
+  const notes = (bundle?.notes ?? []).filter((n) => !n.deleted_at);
+  const flashcards = (bundle?.flashcards ?? []).filter((f) => !f.deleted_at);
+
+  await invoke('upsert_pending_pdf_annotation', {
+    contentHash,
+    pdfDisplayName: displayName ?? 'Untitled PDF',
+    highlightCount: highlights.length,
+    noteCount: notes.length,
+    flashcardCount: flashcards.length,
+    payloadJson: JSON.stringify({ highlights, notes, flashcards }),
+  });
 }
 
-function applyHighlight(row: Highlight & SyncEntity): void {
+export interface PendingAnnotationSummary {
+  content_hash: string;
+  pdf_display_name: string;
+  highlight_count: number;
+  note_count: number;
+  flashcard_count: number;
+  fetched_at: string;
+  payload_json: string | null;
+}
+
+// Called when a PDF is added (or its content_hash is first computed) — a
+// two-tier lookup: use the local cache if we have one, otherwise do a live
+// pull scoped to this single hash so the prompt still works the very first
+// time this device learns the hash matches something synced elsewhere.
+export async function checkPendingAnnotationsForHash(contentHash: string): Promise<PendingAnnotationSummary | null> {
+  const { user } = useStore.getState();
+  if (!user || user.tier === 'free') return null;
+
+  const cachedJson = await invoke<string>('get_pending_pdf_annotation', { contentHash });
+  const cached = JSON.parse(cachedJson) as PendingAnnotationSummary | null;
+  if (cached && (cached.highlight_count || cached.note_count || cached.flashcard_count)) return cached;
+
+  try {
+    const data = await pullRaw([contentHash], new Date(0).toISOString());
+    const bundle = data.pdfs[contentHash];
+    if (!bundle) return null;
+    const highlights = bundle.highlights.filter((h) => !h.deleted_at);
+    const notes = bundle.notes.filter((n) => !n.deleted_at);
+    const flashcards = bundle.flashcards.filter((f) => !f.deleted_at);
+    if (!highlights.length && !notes.length && !flashcards.length) return null;
+
+    const displayName = useStore.getState().pdfs.find((p) => p.content_hash === contentHash)?.filename ?? 'Untitled PDF';
+    await invoke('upsert_pending_pdf_annotation', {
+      contentHash,
+      pdfDisplayName: displayName,
+      highlightCount: highlights.length,
+      noteCount: notes.length,
+      flashcardCount: flashcards.length,
+      payloadJson: JSON.stringify({ highlights, notes, flashcards }),
+    });
+
+    return {
+      content_hash: contentHash,
+      pdf_display_name: displayName,
+      highlight_count: highlights.length,
+      note_count: notes.length,
+      flashcard_count: flashcards.length,
+      fetched_at: new Date().toISOString(),
+      payload_json: null,
+    };
+  } catch (err) {
+    console.error('[sync] live pending-annotation check failed', err);
+    return null;
+  }
+}
+
+interface MaterializeResult { highlights: Highlight[]; notes: Note[]; flashcards: Flashcard[] }
+
+// One-click "Import" action: materializes the cached payload into local
+// highlights/notes/flashcards rows scoped to pdfId, merges them into the
+// store if that PDF is currently open, and clears the pending cache entry.
+export async function materializePendingAnnotations(contentHash: string, pdfId: string): Promise<MaterializeResult> {
+  const json = await invoke<string>('materialize_pending_pdf_annotations', { contentHash, pdfId });
+  const result = JSON.parse(json) as MaterializeResult;
+
+  if (useStore.getState().selectedPdfId === pdfId) {
+    useStore.setState((s) => ({
+      highlights: [...s.highlights, ...result.highlights],
+      notes: [...result.notes, ...s.notes],
+      flashcards: [...s.flashcards, ...result.flashcards],
+    }));
+  }
+
+  useStore.getState().clearPendingImportPrompt();
+  return result;
+}
+
+export async function dismissPendingAnnotations(contentHash: string): Promise<void> {
+  await invoke('delete_pending_pdf_annotation', { contentHash });
+  useStore.getState().clearPendingImportPrompt();
+}
+
+// ── Conflict resolution ─────────────────────────────────────────────────
+// Last-write-wins by updated_at: a server row is only ever handed back
+// (push rejection, or as a pull "changed" row) because its version is >=
+// ours, so applying it unconditionally is correct — the only per-row
+// decision left is whether the server's version is actually newer than the
+// local one, to avoid clobbering an in-flight local edit with a stale echo.
+function isNewer(localAnchor: string | undefined, serverUpdatedAt: string): boolean {
+  if (!localAnchor) return true;
+  return versionOf(serverUpdatedAt) > versionOf(localAnchor);
+}
+
+// Returns whether the local SQLite write actually succeeded — callers that
+// derive a pull cursor from this (pullPdf) must not advance past a row whose
+// local persist failed, or that row would be lost until restart.
+async function applyServerHighlight(row: ServerHighlight, pdfId: string): Promise<boolean> {
   const state = useStore.getState();
   const local = state.highlights.find((h) => h.id === row.id);
-  if (local && !isNewer(local.created_at, row)) return;
+
+  if (row.deleted_at) {
+    if (local) {
+      useStore.setState((s) => ({ highlights: s.highlights.filter((h) => h.id !== row.id) }));
+    }
+    try {
+      await invoke('delete_highlight', { id: row.id });
+      return true;
+    } catch (err) {
+      console.error('[sync] failed to delete highlight', err);
+      return false;
+    }
+  }
+
+  if (local && !isNewer(local.created_at, row.updated_at)) return true;
+  const highlight = fromServerHighlight(row, pdfId);
 
   useStore.setState((s) => ({
-    highlights: local
-      ? s.highlights.map((h) => (h.id === row.id ? { ...h, ...row } : h))
-      : [...s.highlights, row],
+    highlights: local ? s.highlights.map((h) => (h.id === row.id ? highlight : h)) : [...s.highlights, highlight],
   }));
 
-  invoke('update_highlight', {
-    id: row.id,
-    page: row.page,
-    color: row.color,
-    selectedText: row.selected_text,
-    x: row.position_x,
-    y: row.position_y,
-    w: row.position_w,
-    h: row.position_h,
-    note: row.note,
-    rects: row.rects ? JSON.stringify(row.rects) : null,
-  }).catch((err) => console.error('[sync] failed to persist highlight conflict copy', err));
+  try {
+    await invoke('upsert_highlight', {
+      id: highlight.id,
+      pdfId: highlight.pdf_id,
+      page: highlight.page,
+      color: highlight.color,
+      selectedText: highlight.selected_text,
+      x: highlight.position_x,
+      y: highlight.position_y,
+      w: highlight.position_w,
+      h: highlight.position_h,
+      note: highlight.note,
+      rects: highlight.rects ? JSON.stringify(highlight.rects) : null,
+      createdAt: highlight.created_at,
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[sync] failed to upsert highlight ${row.id} from server pull — local row may now be out of sync`, err);
+    return false;
+  }
 }
 
-function applyNote(row: Note & SyncEntity): void {
+async function applyServerNote(row: ServerNote, pdfId: string): Promise<boolean> {
   const state = useStore.getState();
   const local = state.notes.find((n) => n.id === row.id);
-  if (local && !isNewer(local.updated_at, row)) return;
+
+  if (row.deleted_at) {
+    if (local) {
+      useStore.setState((s) => ({ notes: s.notes.filter((n) => n.id !== row.id) }));
+    }
+    try {
+      await invoke('delete_note', { id: row.id });
+      return true;
+    } catch (err) {
+      console.error('[sync] failed to delete note', err);
+      return false;
+    }
+  }
+
+  if (local && !isNewer(local.updated_at, row.updated_at)) return true;
+  const note = fromServerNote(row, pdfId);
 
   useStore.setState((s) => ({
-    notes: local
-      ? s.notes.map((n) => (n.id === row.id ? { ...n, ...row } : n))
-      : [row, ...s.notes],
+    notes: local ? s.notes.map((n) => (n.id === row.id ? note : n)) : [note, ...s.notes],
   }));
 
-  invoke('update_note', {
-    id: row.id,
-    title: row.title,
-    contentMarkdown: row.content_markdown,
-    tags: row.tags,
-  }).catch((err) => console.error('[sync] failed to persist note conflict copy', err));
+  try {
+    await invoke('upsert_note', {
+      id: note.id,
+      title: note.title,
+      contentMarkdown: note.content_markdown,
+      sourcePdfId: note.source_pdf_id,
+      sourcePage: note.source_page,
+      tags: note.tags,
+      updatedAt: note.updated_at,
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[sync] failed to upsert note ${row.id} from server pull — local row may now be out of sync`, err);
+    return false;
+  }
 }
 
-function applyFlashcard(row: Flashcard & SyncEntity): void {
+async function applyServerFlashcard(row: ServerFlashcard, pdfId: string): Promise<boolean> {
   const state = useStore.getState();
   const local = state.flashcards.find((f) => f.id === row.id);
-  if (local && !isNewer(local.created_at, row)) return;
+
+  if (row.deleted_at) {
+    if (local) {
+      useStore.setState((s) => ({ flashcards: s.flashcards.filter((f) => f.id !== row.id) }));
+    }
+    try {
+      await invoke('delete_flashcard', { id: row.id });
+      return true;
+    } catch (err) {
+      console.error('[sync] failed to delete flashcard', err);
+      return false;
+    }
+  }
+
+  if (local && !isNewer(local.updated_at, row.updated_at)) return true;
+  const card = fromServerFlashcard(row, pdfId);
 
   useStore.setState((s) => ({
-    flashcards: local
-      ? s.flashcards.map((f) => (f.id === row.id ? { ...f, ...row } : f))
-      : [...s.flashcards, row],
+    flashcards: local ? s.flashcards.map((f) => (f.id === row.id ? card : f)) : [...s.flashcards, card],
   }));
 
-  invoke('update_flashcard_fields', {
-    id: row.id,
-    front: row.front,
-    back: row.back,
-  }).catch((err) => console.error('[sync] failed to persist flashcard conflict copy', err));
-
-  invoke('update_flashcard_review', {
-    id: row.id,
-    interval: row.interval,
-    easeFactor: row.ease_factor,
-    repetitions: row.repetitions,
-    nextReview: row.next_review,
-  }).catch((err) => console.error('[sync] failed to persist flashcard conflict copy', err));
+  try {
+    await invoke('upsert_flashcard', {
+      id: card.id,
+      sourceHighlightId: card.source_highlight_id,
+      pdfId: card.pdf_id,
+      page: card.page,
+      front: card.front,
+      back: card.back,
+      interval: card.interval,
+      easeFactor: card.ease_factor,
+      repetitions: card.repetitions,
+      nextReview: card.next_review,
+      createdAt: card.created_at,
+      updatedAt: card.updated_at,
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[sync] failed to upsert flashcard ${row.id} from server pull — local row may now be out of sync`, err);
+    return false;
+  }
 }
