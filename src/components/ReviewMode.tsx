@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { gradeFlashcard } from "../services/flashcardService";
 import { schedulePush } from "../services/syncService";
-import type { ReviewQuality } from "../types";
+import type { Flashcard, ReviewQuality } from "../types";
 
 export function ReviewMode() {
   const {
@@ -45,31 +45,39 @@ export function ReviewMode() {
     async (quality: ReviewQuality) => {
       if (!card) return;
       const result = gradeFlashcard(card, quality);
-      updateFlashcardLocal(card.id, {
-        interval: result.interval,
-        ease_factor: result.easeFactor,
-        repetitions: result.repetitions,
-        next_review: result.nextReview,
-      });
       try {
-        await invoke("update_flashcard_review", {
+        const json = await invoke<string>("update_flashcard_review", {
           id: card.id,
           interval: result.interval,
           easeFactor: result.easeFactor,
           repetitions: result.repetitions,
           nextReview: result.nextReview,
         });
+        // Read back the server-confirmed updated_at (same pattern as
+        // RightPanel's flush()/saveTags()) rather than assuming this
+        // grade's own timestamp — update_flashcard_review bumps updated_at
+        // in SQLite on every call, and a stale Zustand copy would let a
+        // pull landing before the debounced push completes silently
+        // revert this grade via applyServerFlashcard's isNewer check.
+        const updated = JSON.parse(json) as Flashcard;
+        updateFlashcardLocal(card.id, {
+          interval: updated.interval,
+          ease_factor: updated.ease_factor,
+          repetitions: updated.repetitions,
+          next_review: updated.next_review,
+          updated_at: updated.updated_at,
+        });
+        // updateFlashcardLocal only schedules a push if card.id exists in
+        // state.flashcards, which is scoped to whichever PDF is currently
+        // open — the global review queue (LibrarySidebar's "Flashcard
+        // Documents" -> get_all_flashcards -> startReview) can grade cards
+        // belonging to PDFs that aren't loaded into the store at all, so that
+        // push would silently never fire. Schedule directly off the card
+        // itself, which always carries the right pdf_id regardless of source.
+        schedulePush(card.pdf_id);
       } catch (err) {
         console.error("[review] failed to persist grade", err);
       }
-      // updateFlashcardLocal only schedules a push if card.id exists in
-      // state.flashcards, which is scoped to whichever PDF is currently
-      // open — the global review queue (LibrarySidebar's "Flashcard
-      // Documents" -> get_all_flashcards -> startReview) can grade cards
-      // belonging to PDFs that aren't loaded into the store at all, so that
-      // push would silently never fire. Schedule directly off the card
-      // itself, which always carries the right pdf_id regardless of source.
-      schedulePush(card.pdf_id);
       advanceReview();
     },
     [card, updateFlashcardLocal, advanceReview]

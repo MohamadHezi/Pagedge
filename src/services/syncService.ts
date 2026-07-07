@@ -628,10 +628,17 @@ function isNewer(localAnchor: string | undefined, serverUpdatedAt: string): bool
 // local persist failed, or that row would be lost until restart.
 async function applyServerHighlight(row: ServerHighlight, pdfId: string): Promise<boolean> {
   const state = useStore.getState();
+  // The highlights/notes/flashcards arrays only ever hold whichever PDF is
+  // currently open (loadHighlights/loadNotes/loadFlashcards replace them
+  // wholesale on PDF switch) — a row pulled for a PDF that isn't open right
+  // now must still persist to SQLite (pullAllOnForeground syncs every known
+  // PDF, not just the open one), but must not be spliced into the live
+  // array, or it renders as if it belongs to whatever PDF the user has open.
+  const isCurrentPdf = pdfId === state.selectedPdfId;
   const local = state.highlights.find((h) => h.id === row.id);
 
   if (row.deleted_at) {
-    if (local) {
+    if (isCurrentPdf && local) {
       useStore.setState((s) => ({ highlights: s.highlights.filter((h) => h.id !== row.id) }));
     }
     try {
@@ -643,12 +650,17 @@ async function applyServerHighlight(row: ServerHighlight, pdfId: string): Promis
     }
   }
 
-  if (local && !isNewer(local.created_at, row.updated_at)) return true;
+  // Same anchor fallback as toServerHighlight's own versionAnchor: a
+  // highlight only ever gets a real updated_at from a delete or a prior
+  // server pull, so most local rows fall back to created_at here.
+  if (local && !isNewer(local.updated_at ?? local.created_at, row.updated_at)) return true;
   const highlight = fromServerHighlight(row, pdfId);
 
-  useStore.setState((s) => ({
-    highlights: local ? s.highlights.map((h) => (h.id === row.id ? highlight : h)) : [...s.highlights, highlight],
-  }));
+  if (isCurrentPdf) {
+    useStore.setState((s) => ({
+      highlights: local ? s.highlights.map((h) => (h.id === row.id ? highlight : h)) : [...s.highlights, highlight],
+    }));
+  }
 
   try {
     await invoke('upsert_highlight', {
@@ -674,10 +686,12 @@ async function applyServerHighlight(row: ServerHighlight, pdfId: string): Promis
 
 async function applyServerNote(row: ServerNote, pdfId: string): Promise<boolean> {
   const state = useStore.getState();
+  // See the matching comment in applyServerHighlight — same reasoning.
+  const isCurrentPdf = pdfId === state.selectedPdfId;
   const local = state.notes.find((n) => n.id === row.id);
 
   if (row.deleted_at) {
-    if (local) {
+    if (isCurrentPdf && local) {
       useStore.setState((s) => ({ notes: s.notes.filter((n) => n.id !== row.id) }));
     }
     try {
@@ -692,9 +706,11 @@ async function applyServerNote(row: ServerNote, pdfId: string): Promise<boolean>
   if (local && !isNewer(local.updated_at, row.updated_at)) return true;
   const note = fromServerNote(row, pdfId);
 
-  useStore.setState((s) => ({
-    notes: local ? s.notes.map((n) => (n.id === row.id ? note : n)) : [note, ...s.notes],
-  }));
+  if (isCurrentPdf) {
+    useStore.setState((s) => ({
+      notes: local ? s.notes.map((n) => (n.id === row.id ? note : n)) : [note, ...s.notes],
+    }));
+  }
 
   try {
     await invoke('upsert_note', {
@@ -715,10 +731,12 @@ async function applyServerNote(row: ServerNote, pdfId: string): Promise<boolean>
 
 async function applyServerFlashcard(row: ServerFlashcard, pdfId: string): Promise<boolean> {
   const state = useStore.getState();
+  // See the matching comment in applyServerHighlight — same reasoning.
+  const isCurrentPdf = pdfId === state.selectedPdfId;
   const local = state.flashcards.find((f) => f.id === row.id);
 
   if (row.deleted_at) {
-    if (local) {
+    if (isCurrentPdf && local) {
       useStore.setState((s) => ({ flashcards: s.flashcards.filter((f) => f.id !== row.id) }));
     }
     try {
@@ -733,9 +751,11 @@ async function applyServerFlashcard(row: ServerFlashcard, pdfId: string): Promis
   if (local && !isNewer(local.updated_at, row.updated_at)) return true;
   const card = fromServerFlashcard(row, pdfId);
 
-  useStore.setState((s) => ({
-    flashcards: local ? s.flashcards.map((f) => (f.id === row.id ? card : f)) : [...s.flashcards, card],
-  }));
+  if (isCurrentPdf) {
+    useStore.setState((s) => ({
+      flashcards: local ? s.flashcards.map((f) => (f.id === row.id ? card : f)) : [...s.flashcards, card],
+    }));
+  }
 
   try {
     await invoke('upsert_flashcard', {
