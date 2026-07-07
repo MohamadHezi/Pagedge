@@ -3,7 +3,23 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
-import { schedulePush, pullPdf } from "../services/syncService";
+import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending } from "../services/syncService";
+
+export interface RemoteOnlyPdf {
+  content_hash: string;
+  display_name: string | null;
+  counts: { highlights: number; notes: number; flashcards: number };
+  updated_at: string;
+}
+
+export interface PendingImportPrompt {
+  pdfId: string;
+  contentHash: string;
+  displayName: string;
+  highlightCount: number;
+  noteCount: number;
+  flashcardCount: number;
+}
 
 export interface AuthUser {
   id: string;
@@ -68,6 +84,18 @@ interface AppState {
   selectPdf: (id: string | null) => void;
   loadPdfs: () => Promise<void>;
   updatePdfChunkCount: (pdfId: string, chunkCount: number) => void;
+
+  // ── Sync: cross-device annotations ───────────────────────────────────────────
+  // PDFs known to the account (via GET /sync/manifest) but not present in the
+  // local library yet — drives the library-level "synced elsewhere" badge.
+  remoteOnlyPdfs: RemoteOnlyPdf[];
+  setRemoteOnlyPdfs: (pdfs: RemoteOnlyPdf[]) => void;
+  // Set right after a newly-added PDF's content_hash resolves to a match in
+  // pending_pdf_annotations — drives the "N highlights available from
+  // another device" import banner for that specific PDF.
+  pendingImportPrompt: PendingImportPrompt | null;
+  setPendingImportPrompt: (prompt: PendingImportPrompt | null) => void;
+  clearPendingImportPrompt: () => void;
 
   // ── Highlights ───────────────────────────────────────────────────────────────
   highlights: Highlight[];
@@ -346,7 +374,15 @@ export const useStore = create<AppState>((set) => ({
     });
     // Content hashing runs in the background — never block the import UI on it.
     if (!pdf.content_hash) {
-      invoke("update_pdf_content_hash", { id: pdf.id, filepath: pdf.filepath }).catch(console.error);
+      invoke<string>("update_pdf_content_hash", { id: pdf.id, filepath: pdf.filepath })
+        .then((hash) => {
+          set((state) => ({ pdfs: state.pdfs.map((p) => (p.id === pdf.id ? { ...p, content_hash: hash } : p)) }));
+          checkPendingImport(pdf.id, hash);
+          retryPushIfPending(pdf.id);
+        })
+        .catch(console.error);
+    } else {
+      checkPendingImport(pdf.id, pdf.content_hash);
     }
     return pdf;
   },
@@ -389,10 +425,23 @@ export const useStore = create<AppState>((set) => ({
     // fire-and-forget, one background hash per unhashed row, never blocks load.
     for (const pdf of pdfs) {
       if (!pdf.content_hash) {
-        invoke("update_pdf_content_hash", { id: pdf.id, filepath: pdf.filepath }).catch(console.error);
+        invoke<string>("update_pdf_content_hash", { id: pdf.id, filepath: pdf.filepath })
+          .then((hash) => {
+            set((state) => ({ pdfs: state.pdfs.map((p) => (p.id === pdf.id ? { ...p, content_hash: hash } : p)) }));
+            checkPendingImport(pdf.id, hash);
+            retryPushIfPending(pdf.id);
+          })
+          .catch(console.error);
       }
     }
   },
+
+  // ── Sync: cross-device annotations ───────────────────────────────────────────
+  remoteOnlyPdfs: [],
+  setRemoteOnlyPdfs: (pdfs) => set({ remoteOnlyPdfs: pdfs }),
+  pendingImportPrompt: null,
+  setPendingImportPrompt: (prompt) => set({ pendingImportPrompt: prompt }),
+  clearPendingImportPrompt: () => set({ pendingImportPrompt: null }),
 
   // ── Highlights ───────────────────────────────────────────────────────────────
   highlights: [],
@@ -682,3 +731,24 @@ export const useStore = create<AppState>((set) => ({
   requestOutlineExtraction: null,
   setRequestOutlineExtraction: (fn) => set({ requestOutlineExtraction: fn }),
 }));
+
+// Checks pending_pdf_annotations for a newly-hashed PDF and, if another
+// device has already synced highlights/notes/flashcards for the same
+// content_hash, surfaces the import prompt. Fire-and-forget — called right
+// after add_pdf/loadPdfs resolve a content_hash, never blocks the caller.
+function checkPendingImport(pdfId: string, contentHash: string): void {
+  checkPendingAnnotationsForHash(contentHash)
+    .then((pending) => {
+      if (!pending) return;
+      if (!pending.highlight_count && !pending.note_count && !pending.flashcard_count) return;
+      useStore.getState().setPendingImportPrompt({
+        pdfId,
+        contentHash,
+        displayName: pending.pdf_display_name,
+        highlightCount: pending.highlight_count,
+        noteCount: pending.note_count,
+        flashcardCount: pending.flashcard_count,
+      });
+    })
+    .catch((err) => console.error('[sync] pending import check failed', err));
+}

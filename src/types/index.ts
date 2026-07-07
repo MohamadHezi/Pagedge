@@ -35,6 +35,8 @@ export interface Highlight {
   rects: HlRect[] | null;
   note: string | null;
   created_at: string;
+  updated_at: string | null;
+  deleted_at: string | null;
 }
 
 export type LensKey = 'default' | 'concepts' | 'revision' | 'flashcards' | 'quotes';
@@ -49,6 +51,7 @@ export interface Note {
   tags: string[];
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 }
 
 export interface Folder {
@@ -103,6 +106,8 @@ export interface Flashcard {
   repetitions: number;
   next_review: string;
   created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
 }
 
 export type ReviewQuality = 'again' | 'hard' | 'good' | 'easy';
