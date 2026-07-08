@@ -1,6 +1,9 @@
 import { useState, useEffect, FormEvent } from 'react';
+import { open } from '@tauri-apps/plugin-shell';
 import { signIn, signUp, getMe, resendConfirmation, AuthApiError } from '../services/authService';
 import { useStore } from '../store';
+
+const TERMS_URL = 'https://pagedge.com/terms.html';
 
 type Mode = 'signin' | 'signup' | 'verify-email';
 
@@ -200,7 +203,15 @@ export function AuthModal({ reason }: AuthModalProps) {
             </form>
 
             <p className="auth-legal">
-              By creating an account, you agree to our Terms of Service.
+              By creating an account, you agree to our{' '}
+              <button
+                type="button"
+                className="auth-legal-link"
+                onClick={() => open(TERMS_URL)}
+              >
+                Terms of Service
+              </button>
+              .
             </p>
           </>
         )}
