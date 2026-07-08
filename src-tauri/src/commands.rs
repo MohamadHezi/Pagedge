@@ -129,6 +129,10 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
 pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     // Cascade in dependency order: child rows first, then the pdf row itself.
+    // flashcards.source_highlight_id FKs into highlights(id), so flashcards must
+    // be deleted before highlights or the FK constraint fails on this delete.
+    conn.execute("DELETE FROM flashcards WHERE pdf_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM highlights WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM chunks WHERE source_id = ?1", rusqlite::params![id])
@@ -136,8 +140,6 @@ pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
     conn.execute("DELETE FROM drawings WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM text_boxes WHERE pdf_id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM flashcards WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM outline_items WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
