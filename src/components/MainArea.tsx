@@ -1,55 +1,14 @@
-import { useEffect, useCallback, useState } from "react";
+import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { PdfViewer } from "./PdfViewer";
+import { GraphView } from "./GraphView";
 import { ingestPdf } from "../services/ingestionService";
 
 export function MainArea() {
-  const { addPdf, selectedPdfId, pdfs, selectPdf } = useStore();
+  const { addPdf, selectedPdfId, pdfs, selectPdf, graphViewOpen } = useStore();
   const selectedPdf = pdfs.find((p) => p.id === selectedPdfId) ?? null;
   const [isDragging, setIsDragging] = useState(false);
-
-  useEffect(() => {
-    // HTML5 dragenter/dragleave do NOT fire for native OS file drags in
-    // Tauri's WebView2 — only onDragDropEvent does. Drive isDragging from
-    // the Tauri "enter" / "leave" payload types instead.
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) => {
-      if (cancelled) return;
-      getCurrentWebviewWindow()
-        .onDragDropEvent(async (event) => {
-          if (event.payload.type === "enter") {
-            setIsDragging(true);
-          } else if (event.payload.type === "leave") {
-            setIsDragging(false);
-          } else if (event.payload.type === "drop") {
-            setIsDragging(false);
-            for (const path of event.payload.paths) {
-              if (path.toLowerCase().endsWith(".pdf")) {
-                const pdf = await addPdf(path);
-                if (!pdf.chunk_count) {
-                  ingestPdf(pdf.id, pdf.filepath).catch(console.error);
-                }
-              }
-            }
-          }
-        })
-        .then((fn) => {
-          if (cancelled) {
-            fn();
-          } else {
-            unlisten = fn;
-          }
-        });
-    });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [addPdf]);
 
   const handleOpenDialog = useCallback(async () => {
     try {
@@ -67,6 +26,31 @@ export function MainArea() {
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  };
+
+  // With native window drag-drop disabled (tauri.conf.json:
+  // app.windows[].dragDropEnabled = false — required so the Collections/
+  // Pinned sidebar's page-internal HTML5 drag-and-drop can receive events
+  // at all), OS file drops fall back to the standard browser drop event.
+  // Tauri patches a `path` property onto each dropped File in that mode.
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    for (const file of Array.from(e.dataTransfer.files)) {
+      const path = (file as File & { path?: string }).path;
+      if (path && path.toLowerCase().endsWith(".pdf")) {
+        const pdf = await addPdf(path);
+        if (!pdf.chunk_count) {
+          ingestPdf(pdf.id, pdf.filepath).catch(console.error);
+        }
+      }
+    }
   };
 
   // Sort by last_opened desc, fall back to ingested_at, show top 3.
@@ -79,8 +63,10 @@ export function MainArea() {
     .slice(0, 3);
 
   return (
-    <main className="main-area" onDragOver={handleDragOver}>
-      {selectedPdf ? (
+    <main className="main-area" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+      {graphViewOpen ? (
+        <GraphView />
+      ) : selectedPdf ? (
         <PdfViewer filePath={selectedPdf.filepath} pdfId={selectedPdf.id} />
       ) : (
         <div className="empty-state-wrap">

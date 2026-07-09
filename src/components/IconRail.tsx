@@ -1,7 +1,19 @@
+import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
+import type { Flashcard } from '../types';
 
 export function IconRail() {
-  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId, isAuthenticated, requireAuth } = useStore();
+  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId, isAuthenticated, requireAuth, startReview, graphViewOpen, setGraphViewOpen } = useStore();
+
+  const handleFlashcardDecksClick = async () => {
+    const json = await invoke<string>('get_all_flashcards');
+    const all: Flashcard[] = JSON.parse(json);
+    const now = Date.now();
+    const due = all
+      .filter((f) => new Date(f.next_review).getTime() <= now)
+      .sort((a, b) => new Date(a.next_review).getTime() - new Date(b.next_review).getTime());
+    startReview(due);
+  };
 
   return (
     <nav className="icon-rail">
@@ -10,11 +22,11 @@ export function IconRail() {
         <div className="ir-logo">P</div>
       </div>
 
-      {/* Primary nav — 4 glyphs per spec */}
+      {/* Primary nav */}
       <div className="ir-nav">
         {/* 1. Library — click while reading to return to welcome dashboard */}
         <button
-          className={`ir-btn${!selectedPdfId ? " ir-btn--active" : ""}`}
+          className={`ir-btn${!selectedPdfId && !graphViewOpen ? " ir-btn--active" : ""}`}
           title={selectedPdfId ? "Back to Library" : "Library"}
           onClick={() => selectPdf(null)}
         >
@@ -32,8 +44,23 @@ export function IconRail() {
           </svg>
         </button>
 
-        {/* 3. Flashcard Decks */}
-        <button className="ir-btn" title="Flashcard Decks">
+        {/* 3. Knowledge Graph */}
+        <button
+          className={`ir-btn${graphViewOpen ? " ir-btn--active" : ""}`}
+          title="Knowledge Graph"
+          onClick={() => setGraphViewOpen(!graphViewOpen)}
+        >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+          </svg>
+        </button>
+
+        {/* 4. Flashcard Decks */}
+        <button className="ir-btn" title="Flashcard Decks" onClick={handleFlashcardDecksClick}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <rect x="2" y="6" width="20" height="14" rx="2" />
             <path d="M16 6V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
@@ -42,7 +69,7 @@ export function IconRail() {
           </svg>
         </button>
 
-        {/* 4. AI Prompt Engine */}
+        {/* 5. AI Prompt Engine */}
         <button className="ir-btn" title="AI Prompt Engine">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />

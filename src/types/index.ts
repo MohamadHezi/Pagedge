@@ -9,6 +9,7 @@ export interface Pdf {
   ingested_at: string | null;
   last_opened: string | null;
   content_hash: string | null;
+  is_pinned: boolean;
 }
 
 export interface PageText {
@@ -58,7 +59,9 @@ export interface Folder {
   id: string;
   name: string;
   parent_id: string | null;
+  order_index: number;
   created_at: string;
+  is_pinned: boolean;
 }
 
 export type DrawToolType = 'pen' | 'arrow' | 'rectangle' | 'circle' | 'textbox';
@@ -122,6 +125,32 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+}
+
+// ── Graph View (knowledge map) ─────────────────────────────────────────────
+
+export type GraphNodeType = 'pdf' | 'note' | 'flashcard' | 'tag';
+
+export type GraphEdgeKind = 'citation' | 'derived' | 'tagged';
+
+export interface GraphNode {
+  id: string;            // type-prefixed unique id, e.g. "pdf:<uuid>" / "tag:<name>"
+  refId: string;         // underlying entity id (or the tag name for tag nodes)
+  type: GraphNodeType;
+  label: string;
+  pdfId: string | null;  // owning/source PDF — drives click-to-open navigation
+  page: number | null;   // source page — consumed via pendingJumpPage on open
+  radius: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+export interface GraphEdge {
+  source: string;        // GraphNode.id
+  target: string;        // GraphNode.id
+  kind: GraphEdgeKind;
 }
 
 export interface OutlineItem {

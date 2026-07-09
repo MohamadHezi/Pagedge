@@ -19,6 +19,17 @@ pub struct Pdf {
     pub ingested_at: Option<String>,
     pub last_opened: Option<String>,
     pub content_hash: Option<String>,
+    pub is_pinned: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub order_index: i64,
+    pub created_at: String,
+    pub is_pinned: bool,
 }
 
 fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -88,7 +99,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
     // existing row so the frontend can deduplicate by id.
     let pdf = if rows_changed == 0 {
         conn.query_row(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned
              FROM pdfs WHERE filepath = ?1",
             rusqlite::params![filepath],
             |row| {
@@ -103,6 +114,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
                     ingested_at: row.get(7)?,
                     last_opened: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_pinned: row.get::<_, i64>(10)? != 0,
                 })
             },
         )
@@ -119,6 +131,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
             ingested_at: Some(ingested_at),
             last_opened: None,
             content_hash: None,
+            is_pinned: false,
         }
     };
 
@@ -143,12 +156,11 @@ pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM outline_items WHERE pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
-    // Keep notes but sever the PDF reference so they survive as orphaned notes.
-    conn.execute(
-        "UPDATE notes SET source_pdf_id = NULL, source_page = NULL WHERE source_pdf_id = ?1",
-        rusqlite::params![id],
-    )
-    .map_err(|e| e.to_string())?;
+    // Notes are hard-deleted like every other child row — a local, no-tombstone
+    // delete that is never pushed to the server, so synced copies on other
+    // devices survive and re-importing the same file re-pulls them.
+    conn.execute("DELETE FROM notes WHERE source_pdf_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM pdfs WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -606,6 +618,24 @@ pub fn add_highlight(
     serde_json::to_string(&highlight).map_err(|e| e.to_string())
 }
 
+// Lets sync callers check whether a highlight row exists locally before
+// upserting a flashcard that references it via source_highlight_id — the
+// FK constraint offers no graceful failure mode, so this avoids the sync
+// pull crashing/retrying forever on a flashcard whose parent highlight was
+// permanently deleted server-side (or lost locally to a stale pull cursor).
+#[tauri::command]
+pub fn highlight_exists(app: AppHandle, id: String) -> Result<bool, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT 1 FROM highlights WHERE id = ?1",
+        rusqlite::params![id],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|r| r.is_some())
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_highlights(app: AppHandle, pdf_id: String, include_deleted: Option<bool>) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
@@ -621,6 +651,25 @@ pub fn get_highlights(app: AppHandle, pdf_id: String, include_deleted: Option<bo
 
     let highlights: Vec<Highlight> = stmt
         .query_map(rusqlite::params![pdf_id], row_to_highlight)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    serde_json::to_string(&highlights).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_highlights_by_color(app: AppHandle, color: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(&format!(
+            "{HIGHLIGHT_SELECT} WHERE color = ?1 AND deleted_at IS NULL ORDER BY pdf_id, page ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+
+    let highlights: Vec<Highlight> = stmt
+        .query_map(rusqlite::params![color], row_to_highlight)
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -2104,7 +2153,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned
              FROM pdfs ORDER BY ingested_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -2122,6 +2171,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
                 ingested_at: row.get(7)?,
                 last_opened: row.get(8)?,
                 content_hash: row.get(9)?,
+                is_pinned: row.get::<_, i64>(10)? != 0,
             })
         })
         .map_err(|e| e.to_string())?
@@ -2220,4 +2270,196 @@ pub fn get_outline(app: AppHandle, pdf_id: String) -> Result<String, String> {
         .filter_map(|r| r.ok())
         .collect();
     serde_json::to_string(&items).map_err(|e| e.to_string())
+}
+
+// ── Collections (folders) + Pinned ──────────────────────────────────────────
+
+fn row_to_folder(row: &rusqlite::Row<'_>) -> rusqlite::Result<Folder> {
+    Ok(Folder {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        parent_id: row.get(2)?,
+        order_index: row.get(3)?,
+        created_at: row.get(4)?,
+        is_pinned: row.get::<_, i64>(5)? != 0,
+    })
+}
+
+const FOLDER_SELECT: &str = "SELECT id, name, parent_id, order_index, created_at, is_pinned FROM folders";
+
+#[tauri::command]
+pub fn create_folder(app: AppHandle, name: String, parent_id: Option<String>) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let created_at = Utc::now().to_rfc3339();
+    let next_order: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(order_index) + 1, 0) FROM folders WHERE parent_id IS ?1",
+            rusqlite::params![parent_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    conn.execute(
+        "INSERT INTO folders (id, name, parent_id, order_index, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, name, parent_id, next_order, created_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let folder = Folder { id, name, parent_id, order_index: next_order, created_at, is_pinned: false };
+    serde_json::to_string(&folder).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_folders(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!("{FOLDER_SELECT} ORDER BY parent_id, order_index ASC"))
+        .map_err(|e| e.to_string())?;
+    let folders: Vec<Folder> = stmt
+        .query_map([], row_to_folder)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    serde_json::to_string(&folders).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_folder(app: AppHandle, id: String, name: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE folders SET name = ?1 WHERE id = ?2",
+        rusqlite::params![name, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Deletes a collection along with all of its (recursive) sub-collections.
+// PDFs that belonged to any of the deleted folders are kept — only their
+// folder_id is cleared — so removing a collection never deletes a document.
+#[tauri::command]
+pub fn delete_folder(app: AppHandle, id: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let mut ids = vec![id.clone()];
+    let mut frontier = vec![id];
+    while !frontier.is_empty() {
+        let mut next = vec![];
+        for parent in &frontier {
+            let mut stmt = conn
+                .prepare("SELECT id FROM folders WHERE parent_id = ?1")
+                .map_err(|e| e.to_string())?;
+            let children: Vec<String> = stmt
+                .query_map(rusqlite::params![parent], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            next.extend(children);
+        }
+        ids.extend(next.clone());
+        frontier = next;
+    }
+
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    conn.execute(
+        &format!("UPDATE pdfs SET folder_id = NULL WHERE folder_id IN ({placeholders})"),
+        rusqlite::params_from_iter(ids.iter()),
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        &format!("DELETE FROM folders WHERE id IN ({placeholders})"),
+        rusqlite::params_from_iter(ids.iter()),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Persists a full sibling order in one call — the frontend recomputes the
+// dragged-to order client-side and sends the whole list back, rather than
+// this command reasoning about drag deltas itself.
+#[tauri::command]
+pub fn reorder_folders(app: AppHandle, ordered_ids: Vec<String>) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    for (index, folder_id) in ordered_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE folders SET order_index = ?1 WHERE id = ?2",
+            rusqlite::params![index as i64, folder_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// Re-parents a folder (drag-and-drop into a different folder, or back out to
+// root). Rejects moves that would create a cycle by walking up from the
+// requested new parent — if that walk ever reaches folder_id itself, the
+// target is folder_id's own descendant (or folder_id itself) and the move
+// is invalid.
+#[tauri::command]
+pub fn move_folder_to_parent(app: AppHandle, folder_id: String, parent_id: Option<String>) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let mut current = parent_id.clone();
+    while let Some(cur) = current {
+        if cur == folder_id {
+            return Err("cannot move a folder into its own descendant".to_string());
+        }
+        current = conn
+            .query_row(
+                "SELECT parent_id FROM folders WHERE id = ?1",
+                rusqlite::params![cur],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten();
+    }
+
+    let next_order: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(order_index) + 1, 0) FROM folders WHERE parent_id IS ?1",
+            rusqlite::params![parent_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    conn.execute(
+        "UPDATE folders SET parent_id = ?1, order_index = ?2 WHERE id = ?3",
+        rusqlite::params![parent_id, next_order, folder_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn move_pdf_to_folder(app: AppHandle, pdf_id: String, folder_id: Option<String>) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE pdfs SET folder_id = ?1 WHERE id = ?2",
+        rusqlite::params![folder_id, pdf_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_pdf_pinned(app: AppHandle, pdf_id: String, pinned: bool) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE pdfs SET is_pinned = ?1 WHERE id = ?2",
+        rusqlite::params![pinned as i64, pdf_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_folder_pinned(app: AppHandle, folder_id: String, pinned: bool) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE folders SET is_pinned = ?1 WHERE id = ?2",
+        rusqlite::params![pinned as i64, folder_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }

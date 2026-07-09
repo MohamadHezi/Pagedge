@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
-import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending } from "../services/syncService";
+import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending, clearPullCursor } from "../services/syncService";
 
 export interface RemoteOnlyPdf {
   content_hash: string;
@@ -85,6 +85,17 @@ interface AppState {
   loadPdfs: () => Promise<void>;
   updatePdfChunkCount: (pdfId: string, chunkCount: number) => void;
 
+  // ── Collections (folders) + Pinned ───────────────────────────────────────────
+  loadFolders: () => Promise<void>;
+  createFolder: (name: string, parentId: string | null) => Promise<Folder>;
+  renameFolder: (id: string, name: string) => Promise<void>;
+  deleteFolder: (id: string) => Promise<void>;
+  reorderFolders: (orderedIds: string[]) => Promise<void>;
+  moveFolderToParent: (folderId: string, parentId: string | null) => Promise<void>;
+  movePdfToFolder: (pdfId: string, folderId: string | null) => Promise<void>;
+  setPdfPinned: (pdfId: string, pinned: boolean) => Promise<void>;
+  setFolderPinned: (folderId: string, pinned: boolean) => Promise<void>;
+
   // ── Sync: cross-device annotations ───────────────────────────────────────────
   // PDFs known to the account (via GET /sync/manifest) but not present in the
   // local library yet — drives the library-level "synced elsewhere" badge.
@@ -160,6 +171,13 @@ interface AppState {
   // ── Search ────────────────────────────────────────────────────────────────────
   searchModalOpen: boolean;
   setSearchModalOpen: (open: boolean) => void;
+
+  // ── Graph view (knowledge map) ───────────────────────────────────────────────
+  // Replaces the center panel with the knowledge graph when true. selectPdf
+  // always resets it, so any node-click navigation (or the Library rail
+  // button) naturally transitions back to the reader / library view.
+  graphViewOpen: boolean;
+  setGraphViewOpen: (open: boolean) => void;
 
   // ── Export ────────────────────────────────────────────────────────────────────
   exportDialogOpen: boolean;
@@ -388,7 +406,9 @@ export const useStore = create<AppState>((set) => ({
   },
 
   deletePdf: async (id: string) => {
+    const pdf = useStore.getState().pdfs.find((p) => p.id === id);
     await invoke('delete_pdf', { id });
+    clearPullCursor(pdf?.content_hash);
     set((state) => ({
       pdfs: state.pdfs.filter((p) => p.id !== id),
       selectedPdfId: state.selectedPdfId === id ? null : state.selectedPdfId,
@@ -409,8 +429,95 @@ export const useStore = create<AppState>((set) => ({
       ),
     })),
 
+  // ── Collections (folders) + Pinned ───────────────────────────────────────────
+  loadFolders: async () => {
+    const json = await invoke<string>("get_folders");
+    const folders: Folder[] = JSON.parse(json);
+    set({ folders });
+  },
+
+  createFolder: async (name: string, parentId: string | null) => {
+    const json = await invoke<string>("create_folder", { name, parentId });
+    const folder: Folder = JSON.parse(json);
+    set((state) => ({ folders: [...state.folders, folder] }));
+    return folder;
+  },
+
+  renameFolder: async (id: string, name: string) => {
+    await invoke("rename_folder", { id, name });
+    set((state) => ({
+      folders: state.folders.map((f) => (f.id === id ? { ...f, name } : f)),
+    }));
+  },
+
+  deleteFolder: async (id: string) => {
+    await invoke("delete_folder", { id });
+    set((state) => {
+      // Mirror the Rust-side recursive delete: this folder and every
+      // descendant are removed, and any pdf pointing at one of them is
+      // un-assigned rather than deleted.
+      const removedIds = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const f of state.folders) {
+          if (f.parent_id && removedIds.has(f.parent_id) && !removedIds.has(f.id)) {
+            removedIds.add(f.id);
+            grew = true;
+          }
+        }
+      }
+      return {
+        folders: state.folders.filter((f) => !removedIds.has(f.id)),
+        pdfs: state.pdfs.map((p) =>
+          p.folder_id && removedIds.has(p.folder_id) ? { ...p, folder_id: null } : p
+        ),
+      };
+    });
+  },
+
+  reorderFolders: async (orderedIds: string[]) => {
+    await invoke("reorder_folders", { orderedIds });
+    set((state) => {
+      const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
+      return {
+        folders: state.folders.map((f) =>
+          orderMap.has(f.id) ? { ...f, order_index: orderMap.get(f.id)! } : f
+        ),
+      };
+    });
+  },
+
+  moveFolderToParent: async (folderId: string, parentId: string | null) => {
+    await invoke("move_folder_to_parent", { folderId, parentId });
+    set((state) => ({
+      folders: state.folders.map((f) => (f.id === folderId ? { ...f, parent_id: parentId } : f)),
+    }));
+  },
+
+  movePdfToFolder: async (pdfId: string, folderId: string | null) => {
+    await invoke("move_pdf_to_folder", { pdfId, folderId });
+    set((state) => ({
+      pdfs: state.pdfs.map((p) => (p.id === pdfId ? { ...p, folder_id: folderId } : p)),
+    }));
+  },
+
+  setPdfPinned: async (pdfId: string, pinned: boolean) => {
+    await invoke("set_pdf_pinned", { pdfId, pinned });
+    set((state) => ({
+      pdfs: state.pdfs.map((p) => (p.id === pdfId ? { ...p, is_pinned: pinned } : p)),
+    }));
+  },
+
+  setFolderPinned: async (folderId: string, pinned: boolean) => {
+    await invoke("set_folder_pinned", { folderId, pinned });
+    set((state) => ({
+      folders: state.folders.map((f) => (f.id === folderId ? { ...f, is_pinned: pinned } : f)),
+    }));
+  },
+
   selectPdf: (id) => {
-    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null });
+    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false });
     if (id) {
       const pdf = useStore.getState().pdfs.find((p) => p.id === id);
       if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
@@ -574,6 +681,10 @@ export const useStore = create<AppState>((set) => ({
   // ── Search ────────────────────────────────────────────────────────────────────
   searchModalOpen: false,
   setSearchModalOpen: (open) => set({ searchModalOpen: open }),
+
+  // ── Graph view (knowledge map) ───────────────────────────────────────────────
+  graphViewOpen: false,
+  setGraphViewOpen: (open) => set({ graphViewOpen: open }),
 
   // ── Export ────────────────────────────────────────────────────────────────────
   exportDialogOpen: false,

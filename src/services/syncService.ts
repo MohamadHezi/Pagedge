@@ -356,6 +356,18 @@ interface PullResponse {
 
 const lastPullAtByHash = new Map<string, string>();
 
+// Deleting a PDF hard-deletes its highlights/notes/flashcards locally (see
+// delete_pdf in commands.rs) but never tells the server — there's no
+// pdfs.deleted_at tombstone pushed. If the same file is re-imported later in
+// the same app session and its content_hash still has an advanced cursor
+// here, the next pull would only fetch rows newer than that stale watermark
+// and silently skip re-creating older parent rows (e.g. a highlight) whose
+// dependents (e.g. a flashcard) do get re-fetched — a permanent FK orphan.
+// Clearing the cursor on delete forces a full re-sync from scratch instead.
+export function clearPullCursor(contentHash: string | null | undefined): void {
+  if (contentHash) lastPullAtByHash.delete(contentHash);
+}
+
 async function pullRaw(contentHashes: string[], since: string): Promise<PullResponse> {
   const body = { content_hashes: contentHashes, since };
   const response = await authedFetch('/sync/pull', {
@@ -759,6 +771,24 @@ async function applyServerFlashcard(row: ServerFlashcard, pdfId: string): Promis
   }
 
   if (local && !isNewer(local.updated_at, row.updated_at)) return true;
+
+  // Guard against a permanently orphaned flashcard: its source highlight was
+  // hard-deleted locally (e.g. by deleting and re-importing the PDF while a
+  // stale pull cursor skipped re-fetching it) or soft-deleted server-side
+  // without a matching flashcard tombstone ever being pushed. Either way the
+  // highlight will never arrive, so upsert_flashcard's FK would fail forever
+  // and spam retries on every foreground pull. bundle.highlights is always
+  // processed before bundle.flashcards within the same pull cycle (see
+  // pullPdf), so a "no" here is a reliable signal, not a same-batch race.
+  const highlightPresent = await invoke<boolean>('highlight_exists', { id: row.source_highlight_id }).catch(() => true);
+  if (!highlightPresent) {
+    console.warn(`[sync] flashcard ${row.id} references a missing highlight ${row.source_highlight_id} — dropping instead of retrying forever`);
+    if (isCurrentPdf && local) {
+      useStore.setState((s) => ({ flashcards: s.flashcards.filter((f) => f.id !== row.id) }));
+    }
+    return true;
+  }
+
   const card = fromServerFlashcard(row, pdfId);
 
   if (isCurrentPdf) {

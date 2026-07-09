@@ -3146,6 +3146,22 @@
   flex: 1;
 }
 
+.nav-quickview-clear {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.nav-quickview-clear:hover {
+  text-decoration: underline;
+}
+
 /* Single leaf item in a section (Quick Views) */
 .nav-tree-item {
   display: flex;
@@ -3518,6 +3534,142 @@
   font-size: 10.5px;
   color: var(--text-muted);
   font-family: var(--font-mono);
+}
+
+/* ── Pin toggle (library + pinned rows) ── */
+.pdf-pin-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  padding: 2px;
+  margin-left: 2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 3px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, color 0.1s, background 0.1s;
+}
+.pdf-item:hover .pdf-pin-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pdf-pin-btn:hover {
+  color: var(--accent);
+  background: var(--bg-container-high);
+}
+.pdf-pin-btn--active {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--accent);
+}
+
+/* Dragged pdf row — dimmed while its drag image follows the cursor */
+.pdf-item--dragging {
+  opacity: 0.45;
+}
+
+/* ── Collections tree (folders) — combined with .pdf-item for box model,
+   these only add folder-specific modifiers/children on top of it ── */
+.collection-row--active {
+  color: var(--accent-bright);
+  background: rgba(255, 214, 10, 0.08) !important;
+}
+
+.collection-row--dragover {
+  background: rgba(255, 214, 10, 0.14);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.collection-row--dragging {
+  opacity: 0.45;
+}
+
+.collection-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.collection-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.collection-row:hover .collection-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.collection-action-btn {
+  background: transparent;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 3px;
+  display: flex;
+  transition: color 0.1s, background 0.1s;
+}
+.collection-action-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-container-high);
+}
+.collection-action-btn--danger:hover {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.12);
+}
+
+.collection-add-root-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: 3px;
+  display: flex;
+  transition: color 0.1s, background 0.1s;
+}
+.collection-add-root-btn:hover {
+  color: var(--accent);
+  background: var(--bg-container-high);
+}
+
+.collection-new-input-wrap {
+  display: flex;
+  padding-top: 2px;
+  padding-bottom: 4px;
+  padding-right: 12px;
+}
+
+.collection-new-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 200, 128, 0.06);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 3px 6px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Library section's root drop zone — lets a pinned/nested pdf be dragged
+   back out to the top level (folder_id = null) */
+.collection-root-drop--dragover {
+  background: rgba(255, 214, 10, 0.05);
+  outline: 1px dashed var(--accent);
+  outline-offset: -2px;
 }
 
 /* ── Drawing canvas layer ───────────────────────────────────────────────────── */
@@ -4478,3 +4630,225 @@
   padding: 12px 4px;
 }
 .feedback-success svg { color: var(--accent); flex-shrink: 0; }
+
+/* ── Graph View (knowledge map) ── */
+.graph-view {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg-surface-dim);
+}
+
+.graph-canvas {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+}
+
+.graph-hud {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  background: rgba(19, 13, 6, 0.72);
+  border: 1px solid var(--border-glass);
+  border-radius: 10px;
+  backdrop-filter: blur(20px);
+  pointer-events: none;
+}
+
+.graph-hud-title {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.graph-hud-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.graph-fit-btn {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(19, 13, 6, 0.72);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  backdrop-filter: blur(20px);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.graph-fit-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.graph-legend {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  background: rgba(19, 13, 6, 0.72);
+  border: 1px solid var(--border-glass);
+  border-radius: 100px;
+  backdrop-filter: blur(20px);
+  pointer-events: none;
+}
+
+.graph-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.graph-legend-item i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.graph-legend-tag {
+  background: transparent;
+  border: 1.5px solid var(--text-muted);
+}
+
+.graph-hint {
+  position: absolute;
+  bottom: 18px;
+  right: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.graph-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 40px;
+  pointer-events: none;
+}
+
+.graph-info-card {
+  position: absolute;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: rgba(19, 13, 6, 0.92);
+  border: 1px solid var(--border-glass);
+  border-radius: 10px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  animation: search-modal-in 0.12s ease;
+}
+
+.graph-info-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.graph-info-close:hover {
+  color: var(--text-primary);
+}
+
+.graph-info-kicker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.graph-info-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  padding-right: 16px;
+}
+
+.graph-info-preview {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.graph-info-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.graph-info-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.graph-info-tag {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  background: var(--bg-container-low);
+  border: 1px solid var(--border-subtle);
+  border-radius: 100px;
+  padding: 1px 8px;
+}
+
+.graph-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.graph-info-list li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-info-list li::before {
+  content: '·';
+  color: var(--accent);
+  margin-right: 6px;
+}

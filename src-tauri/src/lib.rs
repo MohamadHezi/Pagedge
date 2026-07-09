@@ -2,13 +2,16 @@ pub mod commands;
 
 use commands::{
     add_drawing, add_flashcard, add_highlight, add_pdf, add_text_box, create_dir_if_not_exists,
-    create_note, delete_chunks_for_pdf, delete_drawing, delete_flashcard, delete_highlight,
-    delete_note, delete_pdf, delete_text_box, export_annotated_pdf, extract_pdf_text,
+    create_folder, create_note, delete_chunks_for_pdf, delete_drawing, delete_flashcard,
+    delete_folder, delete_highlight, delete_note, delete_pdf, delete_text_box,
+    export_annotated_pdf, extract_pdf_text,
     get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
-    get_flashcards, get_highlights, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
+    get_flashcards, get_folders, get_highlights, get_highlights_by_color, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
+    highlight_exists,
     delete_pending_pdf_annotation, get_all_pending_pdf_annotations, get_pending_pdf_annotation,
-    materialize_pending_pdf_annotations, open_file_dialog, read_file, rename_pdf,
-    reveal_in_folder, set_setting, store_chunks, store_outline, update_drawing_points,
+    materialize_pending_pdf_annotations, move_folder_to_parent, move_pdf_to_folder, open_file_dialog, read_file,
+    rename_folder, rename_pdf, reorder_folders,
+    reveal_in_folder, set_folder_pinned, set_pdf_pinned, set_setting, store_chunks, store_outline, update_drawing_points,
     update_flashcard_fields, update_flashcard_review, update_highlight, update_last_opened,
     update_note, update_pdf_content_hash, update_pdf_ingestion_status, update_text_box,
     upsert_flashcard, upsert_highlight, upsert_note, upsert_pending_pdf_annotation,
@@ -43,10 +46,11 @@ pub fn run() {
 
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS folders (
-                    id         TEXT PRIMARY KEY,
-                    name       TEXT NOT NULL,
-                    parent_id  TEXT,
-                    created_at TEXT NOT NULL
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    parent_id   TEXT,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS pdfs (
@@ -205,6 +209,11 @@ pub fn run() {
             let _ = conn.execute("ALTER TABLE highlights ADD COLUMN rects TEXT", []);
             let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN chunk_count INTEGER DEFAULT 0", []);
 
+            // ── Collections / Pinned ─────────────────────────────────────────────
+            let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE folders ADD COLUMN order_index INTEGER NOT NULL DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE folders ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0", []);
+
             // ── Sync columns (Pro cross-device sync) ────────────────────────────
             let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN content_hash TEXT", []);
 
@@ -331,6 +340,7 @@ pub fn run() {
             update_pdf_content_hash,
             add_highlight,
             get_highlights,
+            get_highlights_by_color,
             delete_highlight,
             update_highlight,
             upsert_highlight,
@@ -358,6 +368,7 @@ pub fn run() {
             add_flashcard,
             get_flashcards,
             get_all_flashcards,
+            highlight_exists,
             delete_flashcard,
             update_flashcard_review,
             update_flashcard_fields,
@@ -371,6 +382,15 @@ pub fn run() {
             get_all_pending_pdf_annotations,
             delete_pending_pdf_annotation,
             materialize_pending_pdf_annotations,
+            create_folder,
+            get_folders,
+            rename_folder,
+            delete_folder,
+            reorder_folders,
+            move_pdf_to_folder,
+            move_folder_to_parent,
+            set_pdf_pinned,
+            set_folder_pinned,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

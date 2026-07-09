@@ -32,6 +32,7 @@ function App() {
     refreshUserFromMe, closePaywall, completeEmailVerification,
     emailVerifyToastOpen, dismissEmailVerifyToast,
     authPromptOpen, authPromptReason,
+    loadFolders,
   } = useStore();
 
   const [appToast, setAppToast] = useState<string | null>(null);
@@ -44,11 +45,12 @@ function App() {
 
   useEffect(() => {
     loadPdfs().catch(console.error);
+    loadFolders().catch(console.error);
     loadAiSettings().catch(console.error);
     initAuth();
     checkForUpdates();
     refreshRemoteOnlyPdfs().catch(console.error);
-  }, [loadPdfs, loadAiSettings, initAuth]);
+  }, [loadPdfs, loadFolders, loadAiSettings, initAuth]);
 
   // pagedge://stripe-success / pagedge://stripe-cancel — fired when Stripe
   // Checkout / the billing portal redirects back to the desktop app.
