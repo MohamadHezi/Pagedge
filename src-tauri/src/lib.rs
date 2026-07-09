@@ -152,17 +152,14 @@ pub fn run() {
                     page                INTEGER NOT NULL,
                     front               TEXT NOT NULL,
                     back                TEXT NOT NULL,
-                    interval            REAL NOT NULL DEFAULT 0,
-                    ease_factor         REAL NOT NULL DEFAULT 2.5,
-                    repetitions         INTEGER NOT NULL DEFAULT 0,
-                    next_review         TEXT NOT NULL,
+                    confidence_level    INTEGER NOT NULL DEFAULT 0,
+                    last_reviewed_at    TEXT,
                     created_at          TEXT NOT NULL,
                     FOREIGN KEY (pdf_id) REFERENCES pdfs(id),
                     FOREIGN KEY (source_highlight_id) REFERENCES highlights(id)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_flashcards_pdf ON flashcards(pdf_id);
-                CREATE INDEX IF NOT EXISTS idx_flashcards_review ON flashcards(next_review);
 
                 CREATE TABLE IF NOT EXISTS outline_items (
                     id          TEXT PRIMARY KEY,
@@ -233,6 +230,27 @@ pub fn run() {
             // Backfill rows created before updated_at existed so the Flashcard
             // struct's non-nullable updated_at field never hits a NULL row.
             let _ = conn.execute("UPDATE flashcards SET updated_at = created_at WHERE updated_at IS NULL", []);
+
+            // ── SRS → confidence migration ──────────────────────────────────────
+            // Replaces SM-2 scheduling (interval/ease_factor/repetitions/
+            // next_review) with a manual confidence rating (0 = unreviewed,
+            // 1 = low, 2 = medium, 3 = mastered) + a last_reviewed_at history
+            // timestamp. The seed UPDATE maps prior review progress onto the
+            // new scale; it only succeeds on the single startup where the old
+            // and new columns coexist, then silently no-ops forever after.
+            // idx_flashcards_review must be dropped before next_review can be
+            // (SQLite refuses to drop an indexed column).
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN confidence_level INTEGER NOT NULL DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN last_reviewed_at TEXT", []);
+            let _ = conn.execute(
+                "UPDATE flashcards SET confidence_level = CASE WHEN repetitions >= 3 THEN 3 WHEN repetitions >= 1 THEN 2 ELSE 0 END",
+                [],
+            );
+            let _ = conn.execute("DROP INDEX IF EXISTS idx_flashcards_review", []);
+            let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN interval", []);
+            let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN ease_factor", []);
+            let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN repetitions", []);
+            let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN next_review", []);
 
             let _ = conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pdfs_content_hash ON pdfs(content_hash)",

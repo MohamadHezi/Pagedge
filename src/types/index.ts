@@ -104,16 +104,18 @@ export interface Flashcard {
   page: number;
   front: string;
   back: string;
-  interval: number;
-  ease_factor: number;
-  repetitions: number;
-  next_review: string;
+  /** 0 = unreviewed, 1 = low, 2 = medium, 3 = high/mastered */
+  confidence_level: number;
+  last_reviewed_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
 }
 
-export type ReviewQuality = 'again' | 'hard' | 'good' | 'easy';
+/** Manual confidence rating a user assigns after flipping a card. */
+export type ConfidenceLevel = 1 | 2 | 3;
+
+export type ReviewFilter = 'all' | 'low';
 
 export interface AiMessage {
   role: 'system' | 'user' | 'assistant';

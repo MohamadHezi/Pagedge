@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { callAI } from './aiService';
 import { useStore } from '../store';
-import type { Flashcard, Highlight, ReviewQuality } from '../types';
+import type { Flashcard, Highlight } from '../types';
 
 const FLASHCARD_SYSTEM =
   'You are a study-flashcard generator. Given a passage a student highlighted, ' +
@@ -63,34 +63,23 @@ export async function generateFlashcardsForHighlights(
   return created;
 }
 
-const QUALITY_SCORE: Record<ReviewQuality, number> = { again: 0, hard: 3, good: 4, easy: 5 };
+// ── Confidence metric ───────────────────────────────────────────────────────
+// Cards carry a manual confidence_level (0 = unreviewed, 1 = low,
+// 2 = medium, 3 = mastered) instead of SRS scheduling. "Low confidence"
+// deliberately includes unreviewed cards — both need attention.
 
-export interface GradeResult {
-  interval: number;
-  easeFactor: number;
-  repetitions: number;
-  nextReview: string;
+export function isLowConfidence(card: Flashcard): boolean {
+  return card.confidence_level <= 1;
 }
 
-export function gradeFlashcard(card: Flashcard, quality: ReviewQuality): GradeResult {
-  const q = QUALITY_SCORE[quality];
-  let repetitions = card.repetitions;
-  let ef = card.ease_factor;
-  let interval = card.interval;
+export interface DeckMastery {
+  mastered: number;
+  total: number;
+  percent: number;
+}
 
-  if (q < 3) {
-    repetitions = 0;
-    interval = 1;
-  } else {
-    repetitions += 1;
-    if (repetitions === 1) interval = 1;
-    else if (repetitions === 2) interval = 6;
-    else interval = Math.round(interval * ef);
-  }
-
-  ef = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
-  ef = Math.max(1.3, ef);
-
-  const nextReview = new Date(Date.now() + interval * 86_400_000).toISOString();
-  return { interval, easeFactor: ef, repetitions, nextReview };
+export function deckMastery(cards: Flashcard[]): DeckMastery {
+  const total = cards.length;
+  const mastered = cards.filter((c) => c.confidence_level === 3).length;
+  return { mastered, total, percent: total === 0 ? 0 : Math.round((mastered / total) * 100) };
 }

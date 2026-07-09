@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, OutlineItem } from "../types";
+import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, ReviewFilter, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
 import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending, clearPullCursor } from "../services/syncService";
@@ -237,11 +237,14 @@ interface AppState {
   addFlashcard: (f: Flashcard) => void;
   removeFlashcard: (id: string) => void;
   updateFlashcardLocal: (id: string, changes: Partial<Flashcard>) => void;
+  reviewDeck: Flashcard[];
   reviewQueue: Flashcard[];
+  reviewFilter: ReviewFilter;
+  setReviewFilter: (f: ReviewFilter) => void;
   currentReviewIndex: number;
   reviewModeOpen: boolean;
   setReviewModeOpen: (open: boolean) => void;
-  startReview: (queue: Flashcard[]) => void;
+  startReview: (deck: Flashcard[]) => void;
   advanceReview: () => void;
   isGeneratingFlashcards: boolean;
   setIsGeneratingFlashcards: (b: boolean) => void;
@@ -787,15 +790,29 @@ export const useStore = create<AppState>((set) => ({
       const updated = state.flashcards.map((f) => (f.id === id ? { ...f, ...changes } : f));
       const card = updated.find((f) => f.id === id);
       if (card) schedulePush(card.pdf_id);
-      return { flashcards: updated };
+      // Also patch the review-session copies so the mastery counter and the
+      // low-confidence filter reflect grades made mid-session.
+      const patch = (list: Flashcard[]) => list.map((f) => (f.id === id ? { ...f, ...changes } : f));
+      return { flashcards: updated, reviewDeck: patch(state.reviewDeck), reviewQueue: patch(state.reviewQueue) };
     }),
 
+  reviewDeck: [],
   reviewQueue: [],
+  reviewFilter: 'all',
+  // Re-derives the session queue from the full deck; switching filters
+  // restarts the session at the first matching card.
+  setReviewFilter: (f) =>
+    set((state) => ({
+      reviewFilter: f,
+      reviewQueue: f === 'low' ? state.reviewDeck.filter((c) => c.confidence_level <= 1) : state.reviewDeck,
+      currentReviewIndex: 0,
+    })),
   currentReviewIndex: 0,
   reviewModeOpen: false,
   setReviewModeOpen: (open) => set({ reviewModeOpen: open }),
 
-  startReview: (queue) => set({ reviewQueue: queue, currentReviewIndex: 0, reviewModeOpen: true }),
+  startReview: (deck) =>
+    set({ reviewDeck: deck, reviewQueue: deck, reviewFilter: 'all', currentReviewIndex: 0, reviewModeOpen: true }),
 
   advanceReview: () => set((state) => ({ currentReviewIndex: state.currentReviewIndex + 1 })),
 

@@ -7,12 +7,10 @@ export function IconRail() {
 
   const handleFlashcardDecksClick = async () => {
     const json = await invoke<string>('get_all_flashcards');
+    // Already ordered least-confident-first by get_all_flashcards; the whole
+    // deck loads — filtering to low-confidence happens inside ReviewMode.
     const all: Flashcard[] = JSON.parse(json);
-    const now = Date.now();
-    const due = all
-      .filter((f) => new Date(f.next_review).getTime() <= now)
-      .sort((a, b) => new Date(a.next_review).getTime() - new Date(b.next_review).getTime());
-    startReview(due);
+    startReview(all);
   };
 
   return (

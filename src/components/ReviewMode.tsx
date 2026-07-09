@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
-import { gradeFlashcard } from "../services/flashcardService";
+import { deckMastery, isLowConfidence } from "../services/flashcardService";
 import { schedulePush } from "../services/syncService";
-import type { Flashcard, ReviewQuality } from "../types";
+import type { Flashcard, ConfidenceLevel } from "../types";
 
 export function ReviewMode() {
   const {
     reviewModeOpen,
     setReviewModeOpen,
+    reviewDeck,
     reviewQueue,
+    reviewFilter,
+    setReviewFilter,
     currentReviewIndex,
     advanceReview,
     updateFlashcardLocal,
-    flashcards,
     selectedPdfId,
     setPendingJumpPage,
     selectPdf,
@@ -24,7 +26,7 @@ export function ReviewMode() {
 
   useEffect(() => {
     setFlipped(false);
-  }, [currentReviewIndex]);
+  }, [currentReviewIndex, reviewFilter]);
 
   useEffect(() => {
     if (!reviewModeOpen) return;
@@ -40,18 +42,16 @@ export function ReviewMode() {
   }, [reviewModeOpen, setReviewModeOpen]);
 
   const card = reviewQueue[currentReviewIndex];
+  const mastery = deckMastery(reviewDeck);
+  const lowCount = reviewDeck.filter(isLowConfidence).length;
 
   const handleGrade = useCallback(
-    async (quality: ReviewQuality) => {
+    async (level: ConfidenceLevel) => {
       if (!card) return;
-      const result = gradeFlashcard(card, quality);
       try {
         const json = await invoke<string>("update_flashcard_review", {
           id: card.id,
-          interval: result.interval,
-          easeFactor: result.easeFactor,
-          repetitions: result.repetitions,
-          nextReview: result.nextReview,
+          confidenceLevel: level,
         });
         // Read back the server-confirmed updated_at (same pattern as
         // RightPanel's flush()/saveTags()) rather than assuming this
@@ -61,10 +61,8 @@ export function ReviewMode() {
         // revert this grade via applyServerFlashcard's isNewer check.
         const updated = JSON.parse(json) as Flashcard;
         updateFlashcardLocal(card.id, {
-          interval: updated.interval,
-          ease_factor: updated.ease_factor,
-          repetitions: updated.repetitions,
-          next_review: updated.next_review,
+          confidence_level: updated.confidence_level,
+          last_reviewed_at: updated.last_reviewed_at,
           updated_at: updated.updated_at,
         });
         // updateFlashcardLocal only schedules a push if card.id exists in
@@ -76,7 +74,7 @@ export function ReviewMode() {
         // itself, which always carries the right pdf_id regardless of source.
         schedulePush(card.pdf_id);
       } catch (err) {
-        console.error("[review] failed to persist grade", err);
+        console.error("[review] failed to persist confidence", err);
       }
       advanceReview();
     },
@@ -96,17 +94,49 @@ export function ReviewMode() {
 
   if (!reviewModeOpen) return null;
 
+  const filterPills = reviewDeck.length > 0 && (
+    <div className="review-filter-row">
+      <button
+        className={`review-filter-pill${reviewFilter === "all" ? " is-active" : ""}`}
+        onClick={() => setReviewFilter("all")}
+      >
+        All cards ({reviewDeck.length})
+      </button>
+      <button
+        className={`review-filter-pill${reviewFilter === "low" ? " is-active" : ""}`}
+        onClick={() => setReviewFilter("low")}
+      >
+        Low confidence ({lowCount})
+      </button>
+    </div>
+  );
+
+  const masteryBar = reviewDeck.length > 0 && (
+    <div className="review-mastery">
+      <span className="review-mastery-label">
+        {mastery.mastered}/{mastery.total} mastered · {mastery.percent}%
+      </span>
+      <div className="review-mastery-track">
+        <div className="review-mastery-fill" style={{ width: `${mastery.percent}%` }} />
+      </div>
+    </div>
+  );
+
   if (!card) {
-    const upcoming = flashcards.filter((f) => new Date(f.next_review).getTime() > Date.now()).length;
+    const sessionDone = reviewQueue.length > 0;
     return (
       <div className="review-overlay" onMouseDown={() => setReviewModeOpen(false)}>
         <div className="review-card-wrap" onMouseDown={(e) => e.stopPropagation()}>
-          <p className="review-empty-title">All caught up</p>
+          <p className="review-empty-title">{sessionDone ? "Session complete" : "Nothing to review"}</p>
           <p className="review-empty-detail">
-            {upcoming > 0
-              ? `${upcoming} more card${upcoming === 1 ? "" : "s"} scheduled for later`
-              : "No flashcards yet — highlight text in green and generate some"}
+            {reviewDeck.length === 0
+              ? "No flashcards yet — highlight text in green and generate some"
+              : reviewFilter === "low" && !sessionDone
+                ? "No low-confidence cards left — nice work"
+                : `${mastery.mastered} of ${mastery.total} cards mastered`}
           </p>
+          {masteryBar}
+          {filterPills}
           <button className="review-close-btn" onClick={() => setReviewModeOpen(false)}>
             Close
           </button>
@@ -121,6 +151,7 @@ export function ReviewMode() {
         <button className="review-close-x" onClick={() => setReviewModeOpen(false)} aria-label="Close review">
           ×
         </button>
+        {filterPills}
         <div className="review-progress">
           Card {currentReviewIndex + 1} of {reviewQueue.length}
         </div>
@@ -138,20 +169,18 @@ export function ReviewMode() {
         </button>
         {flipped && (
           <div className="review-grading-row">
-            <button className="review-grade-btn review-grade-again" onClick={() => handleGrade("again")}>
-              Again
+            <button className="review-grade-btn review-grade-low" onClick={() => handleGrade(1)}>
+              Low Confidence
             </button>
-            <button className="review-grade-btn review-grade-hard" onClick={() => handleGrade("hard")}>
-              Hard
+            <button className="review-grade-btn review-grade-mid" onClick={() => handleGrade(2)}>
+              Getting There
             </button>
-            <button className="review-grade-btn review-grade-good" onClick={() => handleGrade("good")}>
-              Good
-            </button>
-            <button className="review-grade-btn review-grade-easy" onClick={() => handleGrade("easy")}>
-              Easy
+            <button className="review-grade-btn review-grade-high" onClick={() => handleGrade(3)}>
+              Mastered
             </button>
           </div>
         )}
+        {masteryBar}
       </div>
     </div>
   );

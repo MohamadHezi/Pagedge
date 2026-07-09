@@ -54,10 +54,8 @@ interface ServerFlashcard {
   page: number;
   front: string;
   back: string;
-  interval: number;
-  ease_factor: number;
-  repetitions: number;
-  next_review: string;
+  confidence_level: number;
+  last_reviewed_at: string | null;
   updated_at: string;
   deleted_at: string | null;
 }
@@ -114,10 +112,8 @@ function toServerFlashcard(f: Flashcard): ServerFlashcard {
     page: f.page,
     front: f.front,
     back: f.back,
-    interval: f.interval,
-    ease_factor: f.ease_factor,
-    repetitions: f.repetitions,
-    next_review: f.next_review,
+    confidence_level: f.confidence_level,
+    last_reviewed_at: f.last_reviewed_at,
     updated_at: f.updated_at,
     deleted_at: f.deleted_at,
   };
@@ -173,10 +169,10 @@ function fromServerFlashcard(row: ServerFlashcard, pdfId: string): Flashcard {
     page: row.page,
     front: row.front,
     back: row.back,
-    interval: row.interval,
-    ease_factor: row.ease_factor,
-    repetitions: row.repetitions,
-    next_review: row.next_review,
+    // ?? fallbacks cover rows pushed before the SRS→confidence migration,
+    // which lack both fields — they surface as unreviewed.
+    confidence_level: row.confidence_level ?? 0,
+    last_reviewed_at: row.last_reviewed_at ?? null,
     created_at: row.updated_at,
     updated_at: row.updated_at,
     deleted_at: null,
@@ -805,10 +801,8 @@ async function applyServerFlashcard(row: ServerFlashcard, pdfId: string): Promis
       page: card.page,
       front: card.front,
       back: card.back,
-      interval: card.interval,
-      easeFactor: card.ease_factor,
-      repetitions: card.repetitions,
-      nextReview: card.next_review,
+      confidenceLevel: card.confidence_level,
+      lastReviewedAt: card.last_reviewed_at,
       createdAt: card.created_at,
       updatedAt: card.updated_at,
     });

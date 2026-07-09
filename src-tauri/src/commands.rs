@@ -354,10 +354,13 @@ struct MaterializeFlashcard {
     page: i64,
     front: String,
     back: String,
-    interval: f64,
-    ease_factor: f64,
-    repetitions: i64,
-    next_review: String,
+    // Defaulted so payloads cached before the SRS→confidence migration
+    // (which carry interval/ease_factor/repetitions/next_review instead)
+    // still deserialize — serde ignores their unknown old fields.
+    #[serde(default)]
+    confidence_level: i64,
+    #[serde(default)]
+    last_reviewed_at: Option<String>,
     updated_at: Option<String>,
     #[serde(default)]
     deleted_at: Option<String>,
@@ -477,11 +480,11 @@ pub fn materialize_pending_pdf_annotations(
         let updated_at = f.updated_at.clone().unwrap_or_else(|| Utc::now().to_rfc3339());
         conn.execute(
             "INSERT OR IGNORE INTO flashcards
-             (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+             (id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             rusqlite::params![
                 f.id, f.source_highlight_id, pdf_id, f.page, f.front, f.back,
-                f.interval, f.ease_factor, f.repetitions, f.next_review, updated_at,
+                f.confidence_level, f.last_reviewed_at, updated_at,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -493,10 +496,8 @@ pub fn materialize_pending_pdf_annotations(
             page: f.page,
             front: f.front,
             back: f.back,
-            interval: f.interval,
-            ease_factor: f.ease_factor,
-            repetitions: f.repetitions,
-            next_review: f.next_review,
+            confidence_level: f.confidence_level,
+            last_reviewed_at: f.last_reviewed_at,
             created_at: updated_at.clone(),
             updated_at,
             deleted_at: None,
@@ -1332,10 +1333,8 @@ pub struct Flashcard {
     pub page: i64,
     pub front: String,
     pub back: String,
-    pub interval: f64,
-    pub ease_factor: f64,
-    pub repetitions: i64,
-    pub next_review: String,
+    pub confidence_level: i64,
+    pub last_reviewed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
@@ -1349,18 +1348,16 @@ fn row_to_flashcard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Flashcard> {
         page:                row.get(3)?,
         front:               row.get(4)?,
         back:                row.get(5)?,
-        interval:            row.get(6)?,
-        ease_factor:         row.get(7)?,
-        repetitions:         row.get(8)?,
-        next_review:         row.get(9)?,
-        created_at:          row.get(10)?,
-        updated_at:          row.get(11)?,
-        deleted_at:          row.get(12)?,
+        confidence_level:    row.get(6)?,
+        last_reviewed_at:    row.get(7)?,
+        created_at:          row.get(8)?,
+        updated_at:          row.get(9)?,
+        deleted_at:          row.get(10)?,
     })
 }
 
 const FC_SELECT: &str =
-    "SELECT id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at, deleted_at FROM flashcards";
+    "SELECT id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at, deleted_at FROM flashcards";
 
 #[tauri::command]
 pub fn add_flashcard(
@@ -1374,21 +1371,18 @@ pub fn add_flashcard(
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let interval = 0.0_f64;
-    let ease_factor = 2.5_f64;
-    let repetitions = 0_i64;
 
     conn.execute(
-        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10)",
-        rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, now],
+        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, ?7, ?7)",
+        rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, now],
     )
     .map_err(|e| e.to_string())?;
 
     let card = Flashcard {
         id, source_highlight_id, pdf_id, page, front, back,
-        interval, ease_factor, repetitions,
-        next_review: now.clone(), created_at: now.clone(), updated_at: now,
+        confidence_level: 0, last_reviewed_at: None,
+        created_at: now.clone(), updated_at: now,
         deleted_at: None,
     };
     serde_json::to_string(&card).map_err(|e| e.to_string())
@@ -1417,7 +1411,7 @@ pub fn get_flashcards(app: AppHandle, pdf_id: String, include_deleted: Option<bo
 pub fn get_all_flashcards(app: AppHandle) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare(&format!("{FC_SELECT} WHERE deleted_at IS NULL ORDER BY next_review ASC"))
+        .prepare(&format!("{FC_SELECT} WHERE deleted_at IS NULL ORDER BY confidence_level ASC, created_at ASC"))
         .map_err(|e| e.to_string())?;
     let cards: Vec<Flashcard> = stmt
         .query_map([], row_to_flashcard)
@@ -1443,22 +1437,17 @@ pub fn delete_flashcard(app: AppHandle, id: String) -> Result<(), String> {
 pub fn update_flashcard_review(
     app: AppHandle,
     id: String,
-    interval: f64,
-    ease_factor: f64,
-    repetitions: i64,
-    next_review: String,
+    confidence_level: i64,
 ) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE flashcards SET
-            interval    = ?1,
-            ease_factor = ?2,
-            repetitions = ?3,
-            next_review = ?4,
-            updated_at  = ?5
-         WHERE id = ?6",
-        rusqlite::params![interval, ease_factor, repetitions, next_review, now, id],
+            confidence_level = ?1,
+            last_reviewed_at = ?2,
+            updated_at       = ?2
+         WHERE id = ?3",
+        rusqlite::params![confidence_level, now, id],
     )
     .map_err(|e| e.to_string())?;
     let card = conn
@@ -1498,10 +1487,8 @@ pub fn upsert_flashcard(
     page: i64,
     front: String,
     back: String,
-    interval: f64,
-    ease_factor: f64,
-    repetitions: i64,
-    next_review: String,
+    confidence_level: i64,
+    last_reviewed_at: Option<String>,
     created_at: String,
     updated_at: String,
 ) -> Result<String, String> {
@@ -1518,20 +1505,18 @@ pub fn upsert_flashcard(
     let created_at = existing_created_at.unwrap_or(created_at);
 
     conn.execute(
-        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
             source_highlight_id = excluded.source_highlight_id,
             pdf_id               = excluded.pdf_id,
             page                 = excluded.page,
             front                = excluded.front,
             back                 = excluded.back,
-            interval             = excluded.interval,
-            ease_factor          = excluded.ease_factor,
-            repetitions          = excluded.repetitions,
-            next_review          = excluded.next_review,
+            confidence_level     = excluded.confidence_level,
+            last_reviewed_at     = excluded.last_reviewed_at,
             updated_at           = excluded.updated_at",
-        rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, interval, ease_factor, repetitions, next_review, created_at, updated_at],
+        rusqlite::params![id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at],
     )
     .map_err(|e| e.to_string())?;
 
