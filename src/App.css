@@ -3210,6 +3210,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--micro-gap);
+  padding-bottom: 8px;
 }
 
 /* "+ New Entry" primary action tile */
@@ -4751,9 +4752,10 @@
 
 .graph-hint {
   position: absolute;
-  bottom: 18px;
+  bottom: 28px;
   right: 16px;
   font-size: 11px;
+  line-height: 1.4;
   color: var(--text-muted);
   opacity: 0.7;
   pointer-events: none;
@@ -4867,4 +4869,81 @@
   content: '·';
   color: var(--accent);
   margin-right: 6px;
+}
+
+/* One-time onboarding card on first graph open */
+.graph-onboard-card {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: rgba(19, 13, 6, 0.92);
+  border: 1px solid var(--border-glass);
+  border-radius: 10px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  animation: search-modal-in 0.12s ease;
+}
+
+.graph-onboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.graph-onboard-list b {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.graph-onboard-list code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent);
+  background: var(--bg-container-low);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.graph-onboard-dismiss {
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 4px 14px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--bg-surface-dim);
+  background: var(--accent);
+  border: none;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+
+.graph-onboard-dismiss:hover {
+  filter: brightness(1.1);
+}
+
+/* Teaching hint when the graph has nodes but few connections */
+.graph-sparse-hint {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(19, 13, 6, 0.72);
+  border: 1px solid var(--border-glass);
+  border-radius: 100px;
+  backdrop-filter: blur(20px);
+  pointer-events: none;
 }

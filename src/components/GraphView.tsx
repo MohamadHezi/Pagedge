@@ -274,6 +274,9 @@ export function GraphView() {
   // and notes/cards whose source PDF was deleted). Anchored at the click
   // position in container coordinates.
   const [infoCard, setInfoCard] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  // One-time onboarding card on first graph open — persisted via the
+  // settings table (key `graph_hint_seen`) so it never reappears.
+  const [showOnboardCard, setShowOnboardCard] = useState(false);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -313,6 +316,19 @@ export function GraphView() {
       x: w / 2 - ((minX + maxX) / 2) * k,
       y: h / 2 - ((minY + maxY) / 2) * k,
     };
+  }, []);
+
+  // First-open hint: `get_setting` returns '' for unknown keys, so anything
+  // other than 'true' means the user hasn't dismissed the card yet.
+  useEffect(() => {
+    invoke<string>('get_setting', { key: 'graph_hint_seen' })
+      .then((v) => { if (v !== 'true') setShowOnboardCard(true); })
+      .catch(() => {});
+  }, []);
+
+  const dismissOnboardCard = useCallback(() => {
+    setShowOnboardCard(false);
+    invoke('set_setting', { key: 'graph_hint_seen', value: 'true' }).catch(() => {});
   }, []);
 
   // ── Canvas sizing (DPR-aware, tracks the container) ───────────────────────
@@ -786,12 +802,44 @@ export function GraphView() {
         );
       })()}
 
+      {showOnboardCard && (
+        <div className="graph-onboard-card">
+          <span className="graph-info-kicker">Knowledge Map</span>
+          <span className="graph-info-title">How to read this map</span>
+          <ul className="graph-onboard-list">
+            <li>
+              <b>Dots are your knowledge</b> — documents, notes, flashcards, and tags,
+              colored as in the legend. Solid lines are links you made; dotted amber
+              lines mean Pagedge found related content.
+            </li>
+            <li>
+              <b>Click any node</b> to open it — documents open in the reader, notes
+              open in the editor.
+            </li>
+            <li>
+              <b>Draw your own connections</b> by typing <code>[[Note Title]]</code>{' '}
+              inside another note.
+            </li>
+          </ul>
+          <button className="graph-onboard-dismiss" onClick={dismissOnboardCard}>
+            Got it
+          </button>
+        </div>
+      )}
+
       {loaded && counts.nodes === 0 && (
         <div className="graph-empty">
           <p className="empty-state-headline">Nothing to map yet</p>
           <span className="empty-state-subtext">
             Import PDFs, write notes, and tag them — their connections will appear here.
+            Link notes to each other by typing [[Note Title]] inside a note.
           </span>
+        </div>
+      )}
+
+      {loaded && !showOnboardCard && counts.nodes >= 2 && counts.edges < counts.nodes / 2 && (
+        <div className="graph-sparse-hint">
+          Sparse map? Connect notes by typing [[Note Title]] inside another note.
         </div>
       )}
     </div>

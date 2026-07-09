@@ -385,6 +385,9 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
               hideToolbar
               visibleDragbar={false}
               height={480}
+              textareaProps={{
+                placeholder: "Write your note… link other notes with [[Note Title]]",
+              }}
             />
           </div>
 
