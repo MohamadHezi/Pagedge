@@ -131,7 +131,7 @@ export interface ChatMessage {
 
 export type GraphNodeType = 'pdf' | 'note' | 'flashcard' | 'tag';
 
-export type GraphEdgeKind = 'citation' | 'derived' | 'tagged';
+export type GraphEdgeKind = 'citation' | 'derived' | 'tagged' | 'semantic';
 
 export interface GraphNode {
   id: string;            // type-prefixed unique id, e.g. "pdf:<uuid>" / "tag:<name>"
@@ -151,6 +151,7 @@ export interface GraphEdge {
   source: string;        // GraphNode.id
   target: string;        // GraphNode.id
   kind: GraphEdgeKind;
+  weight?: number;       // semantic edges only: 0–1 normalized similarity strength
 }
 
 export interface OutlineItem {

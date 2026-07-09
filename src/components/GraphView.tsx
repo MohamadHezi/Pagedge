@@ -23,10 +23,96 @@ const DAMPING = 0.82;
 const GRAVITY = 0.012;
 const MAX_VELOCITY = 14;
 const REPULSION_CUTOFF = 360; // world units beyond which repulsion is skipped
-const EDGE_REST: Record<GraphEdgeKind, number> = { citation: 120, derived: 85, tagged: 75 };
+const EDGE_REST: Record<GraphEdgeKind, number> = { citation: 120, derived: 85, tagged: 75, semantic: 190 };
+
+// ── Semantic similarity edges ────────────────────────────────────────────────
+// Document↔document edges derived from the ingestion pipeline's chunk
+// embeddings: each PDF gets a normalized centroid vector (mean of its chunk
+// embeddings), and doc pairs whose cosine similarity clears the threshold
+// connect. Capped per doc so a homogeneous library doesn't become a hairball.
+// Calibrated against real MiniLM doc centroids: related docs (e.g. a résumé
+// and a statement of interest) score ~0.5; unrelated ones ≤ ~0.25.
+const SEMANTIC_THRESHOLD = 0.45;
+const SEMANTIC_WEIGHT_CEIL = 0.85; // sims at/above this render at full strength
+const SEMANTIC_MAX_PER_DOC = 3;
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+// Embeddings are stored as raw little-endian f32 bytes (same decode as
+// SearchModal's bytesToFloat32).
+function bytesToFloat32(bytes: number[]): Float32Array {
+  const buf = new ArrayBuffer(bytes.length);
+  const u8 = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) u8[i] = bytes[i];
+  const dv = new DataView(buf);
+  const floats = new Float32Array(bytes.length / 4);
+  for (let i = 0; i < floats.length; i++) floats[i] = dv.getFloat32(i * 4, true);
+  return floats;
+}
+
+// Mean chunk embedding per PDF, L2-normalized so pair similarity below is a
+// plain dot product.
+function computeDocCentroids(chunks: Array<{ source_id: string; embedding: number[] }>): Map<string, Float32Array> {
+  const sums = new Map<string, { v: Float64Array; n: number }>();
+  for (const c of chunks) {
+    if (!c.embedding.length) continue;
+    const vec = bytesToFloat32(c.embedding);
+    let entry = sums.get(c.source_id);
+    if (!entry) {
+      entry = { v: new Float64Array(vec.length), n: 0 };
+      sums.set(c.source_id, entry);
+    }
+    for (let i = 0; i < vec.length; i++) entry.v[i] += vec[i];
+    entry.n++;
+  }
+  const centroids = new Map<string, Float32Array>();
+  for (const [id, { v, n }] of sums) {
+    const mean = new Float32Array(v.length);
+    let mag = 0;
+    for (let i = 0; i < v.length; i++) {
+      mean[i] = v[i] / n;
+      mag += mean[i] * mean[i];
+    }
+    mag = Math.sqrt(mag) || 1;
+    for (let i = 0; i < mean.length; i++) mean[i] /= mag;
+    centroids.set(id, mean);
+  }
+  return centroids;
+}
+
+// All doc pairs above SEMANTIC_THRESHOLD, strongest first, each doc keeping
+// at most SEMANTIC_MAX_PER_DOC edges. weight is the similarity re-normalized
+// to 0–1 over the retained range for rendering.
+function computeSemanticPairs(centroids: Map<string, Float32Array>): Array<{ a: string; b: string; weight: number }> {
+  const ids = Array.from(centroids.keys());
+  const scored: Array<{ a: string; b: string; sim: number }> = [];
+  for (let i = 0; i < ids.length; i++) {
+    const va = centroids.get(ids[i])!;
+    for (let j = i + 1; j < ids.length; j++) {
+      const vb = centroids.get(ids[j])!;
+      let dot = 0;
+      for (let k = 0; k < va.length; k++) dot += va[k] * vb[k];
+      if (dot >= SEMANTIC_THRESHOLD) scored.push({ a: ids[i], b: ids[j], sim: dot });
+    }
+  }
+  scored.sort((x, y) => y.sim - x.sim);
+  const perDoc = new Map<string, number>();
+  const pairs: Array<{ a: string; b: string; weight: number }> = [];
+  for (const p of scored) {
+    const usedA = perDoc.get(p.a) ?? 0;
+    const usedB = perDoc.get(p.b) ?? 0;
+    if (usedA >= SEMANTIC_MAX_PER_DOC || usedB >= SEMANTIC_MAX_PER_DOC) continue;
+    perDoc.set(p.a, usedA + 1);
+    perDoc.set(p.b, usedB + 1);
+    pairs.push({
+      a: p.a,
+      b: p.b,
+      weight: Math.min(1, (p.sim - SEMANTIC_THRESHOLD) / (SEMANTIC_WEIGHT_CEIL - SEMANTIC_THRESHOLD)),
+    });
+  }
+  return pairs;
 }
 
 // Crude markdown → plain text for the info-card preview.
@@ -45,6 +131,7 @@ function buildGraph(
   pdfs: Pdf[],
   notes: Note[],
   cards: Flashcard[],
+  semanticPairs: Array<{ a: string; b: string; weight: number }>,
   prev: Map<string, GraphNode>,
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = [];
@@ -73,6 +160,13 @@ function buildGraph(
   });
 
   const pdfIds = new Set(pdfs.map((p) => p.id));
+
+  for (const pair of semanticPairs) {
+    if (pdfIds.has(pair.a) && pdfIds.has(pair.b)) {
+      edges.push({ source: `pdf:${pair.a}`, target: `pdf:${pair.b}`, kind: 'semantic', weight: pair.weight });
+    }
+  }
+
   const jitterNear = (anchorId: string | null) => {
     const anchor = anchorId ? byId.get(`pdf:${anchorId}`) : undefined;
     return {
@@ -122,8 +216,11 @@ function buildGraph(
   }
 
   // Well-connected documents grow with their degree so hubs read as hubs.
+  // Semantic edges are excluded — document size means "annotation activity",
+  // not "topically similar to other documents".
   const degree = new Map<string, number>();
   for (const e of edges) {
+    if (e.kind === 'semantic') continue;
     degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
     degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
   }
@@ -211,15 +308,18 @@ export function GraphView() {
     let stale = false;
     (async () => {
       try {
-        const [notesJson, cardsJson] = await Promise.all([
+        const [notesJson, cardsJson, chunksJson] = await Promise.all([
           invoke<string>('get_notes', {}),
           invoke<string>('get_all_flashcards'),
+          invoke<string>('get_all_chunks'),
         ]);
         if (stale) return;
         const allNotes: Note[] = JSON.parse(notesJson);
         const allCards: Flashcard[] = JSON.parse(cardsJson);
+        const allChunks: Array<{ source_id: string; embedding: number[] }> = JSON.parse(chunksJson);
         noteDetailsRef.current = new Map(allNotes.map((n) => [n.id, n]));
-        const { nodes, edges } = buildGraph(pdfs, allNotes, allCards, nodeMapRef.current);
+        const semanticPairs = computeSemanticPairs(computeDocCentroids(allChunks));
+        const { nodes, edges } = buildGraph(pdfs, allNotes, allCards, semanticPairs, nodeMapRef.current);
 
         nodesRef.current = nodes;
         edgesRef.current = edges;
@@ -281,7 +381,11 @@ export function GraphView() {
         if (!a || !b) continue;
         const dx = b.x - a.x, dy = b.y - a.y;
         const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-        const f = SPRING_K * (d - EDGE_REST[e.kind]) * alpha;
+        // Semantic springs are deliberately soft — they nudge related
+        // document clusters toward each other without collapsing the layout,
+        // pulling harder the more similar the pair.
+        const stiffness = e.kind === 'semantic' ? 0.15 + 0.35 * (e.weight ?? 0.5) : 1;
+        const f = SPRING_K * stiffness * (d - EDGE_REST[e.kind]) * alpha;
         const fx = (dx / d) * f, fy = (dy / d) * f;
         a.vx += fx; a.vy += fy;
         b.vx -= fx; b.vy -= fy;
@@ -340,11 +444,21 @@ export function GraphView() {
         const a = map.get(e.source), b = map.get(e.target);
         if (!a || !b) continue;
         const lit = active !== null && (e.source === active.id || e.target === active.id);
-        ctx.strokeStyle = lit
-          ? 'rgba(255, 200, 128, 0.75)'
-          : activeSet ? 'rgba(159, 142, 122, 0.08)' : 'rgba(159, 142, 122, 0.22)';
-        ctx.lineWidth = (lit ? 1.6 : 1) / view.k;
-        ctx.setLineDash(e.kind === 'tagged' ? [4 / view.k, 4 / view.k] : []);
+        if (e.kind === 'semantic') {
+          // Fine-dotted amber, opacity and width scaling with similarity.
+          const wgt = e.weight ?? 0.5;
+          ctx.strokeStyle = lit
+            ? 'rgba(245, 166, 35, 0.85)'
+            : activeSet ? 'rgba(245, 166, 35, 0.06)' : `rgba(245, 166, 35, ${0.12 + 0.22 * wgt})`;
+          ctx.lineWidth = (lit ? 1.8 : 0.8 + wgt) / view.k;
+          ctx.setLineDash([2 / view.k, 3 / view.k]);
+        } else {
+          ctx.strokeStyle = lit
+            ? 'rgba(255, 200, 128, 0.75)'
+            : activeSet ? 'rgba(159, 142, 122, 0.08)' : 'rgba(159, 142, 122, 0.22)';
+          ctx.lineWidth = (lit ? 1.6 : 1) / view.k;
+          ctx.setLineDash(e.kind === 'tagged' ? [4 / view.k, 4 / view.k] : []);
+        }
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
@@ -582,6 +696,7 @@ export function GraphView() {
         <span className="graph-legend-item"><i style={{ background: NODE_COLORS.note }} />Notes</span>
         <span className="graph-legend-item"><i style={{ background: NODE_COLORS.flashcard }} />Flashcards</span>
         <span className="graph-legend-item"><i className="graph-legend-tag" />Tags</span>
+        <span className="graph-legend-item"><i className="graph-legend-semantic" />Related content</span>
       </div>
 
       <div className="graph-hint">Scroll to zoom · Drag to pan · Click a node to open it</div>
