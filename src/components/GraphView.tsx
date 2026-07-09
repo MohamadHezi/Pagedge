@@ -23,7 +23,7 @@ const DAMPING = 0.82;
 const GRAVITY = 0.012;
 const MAX_VELOCITY = 14;
 const REPULSION_CUTOFF = 360; // world units beyond which repulsion is skipped
-const EDGE_REST: Record<GraphEdgeKind, number> = { citation: 120, derived: 85, tagged: 75, semantic: 190 };
+const EDGE_REST: Record<GraphEdgeKind, number> = { citation: 120, derived: 85, tagged: 75, semantic: 190, linked: 100 };
 
 // ── Semantic similarity edges ────────────────────────────────────────────────
 // Document↔document edges derived from the ingestion pipeline's chunk
@@ -124,6 +124,20 @@ function stripMarkdown(md: string): string {
     .trim();
 }
 
+// Extracts [[wiki link]] targets from note markdown — the explicit
+// note-to-note references users draw themselves. Supports the
+// [[target|alias]] form; returns trimmed, lowercased target titles.
+function extractWikiLinks(markdown: string): string[] {
+  const targets: string[] = [];
+  const re = /\[\[([^[\]]+)\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(markdown)) !== null) {
+    const target = m[1].split('|')[0].trim().toLowerCase();
+    if (target) targets.push(target);
+  }
+  return targets;
+}
+
 // Builds nodes + edges from the raw entities. Positions of nodes that already
 // existed in the previous build are preserved (keyed by id) so live refreshes
 // don't scramble a layout the user has arranged.
@@ -187,6 +201,26 @@ function buildGraph(
     });
     if (srcPdfId) edges.push({ source: `note:${note.id}`, target: `pdf:${srcPdfId}`, kind: 'citation' });
     for (const t of note.tags) tagNames.add(t);
+  }
+
+  // Explicit [[wiki links]] between notes. Titles resolve case-insensitively;
+  // when several notes share a title, the most recently updated wins
+  // (get_notes orders by updated_at DESC, so the first occurrence is newest).
+  const noteIdByTitle = new Map<string, string>();
+  for (const note of notes) {
+    const key = note.title.trim().toLowerCase();
+    if (key && !noteIdByTitle.has(key)) noteIdByTitle.set(key, note.id);
+  }
+  const seenLinks = new Set<string>();
+  for (const note of notes) {
+    for (const target of extractWikiLinks(note.content_markdown)) {
+      const targetId = noteIdByTitle.get(target);
+      if (!targetId || targetId === note.id) continue;
+      const pairKey = note.id < targetId ? `${note.id}|${targetId}` : `${targetId}|${note.id}`;
+      if (seenLinks.has(pairKey)) continue;
+      seenLinks.add(pairKey);
+      edges.push({ source: `note:${note.id}`, target: `note:${targetId}`, kind: 'linked' });
+    }
   }
 
   for (const card of cards) {
@@ -453,10 +487,14 @@ export function GraphView() {
           ctx.lineWidth = (lit ? 1.8 : 0.8 + wgt) / view.k;
           ctx.setLineDash([2 / view.k, 3 / view.k]);
         } else {
+          // Wiki links are user-drawn — render them a notch brighter and
+          // heavier than the inferred citation/derived/tagged edges.
           ctx.strokeStyle = lit
             ? 'rgba(255, 200, 128, 0.75)'
-            : activeSet ? 'rgba(159, 142, 122, 0.08)' : 'rgba(159, 142, 122, 0.22)';
-          ctx.lineWidth = (lit ? 1.6 : 1) / view.k;
+            : activeSet
+              ? 'rgba(159, 142, 122, 0.08)'
+              : e.kind === 'linked' ? 'rgba(255, 214, 160, 0.40)' : 'rgba(159, 142, 122, 0.22)';
+          ctx.lineWidth = (lit ? 1.6 : e.kind === 'linked' ? 1.3 : 1) / view.k;
           ctx.setLineDash(e.kind === 'tagged' ? [4 / view.k, 4 / view.k] : []);
         }
         ctx.beginPath();
@@ -696,6 +734,7 @@ export function GraphView() {
         <span className="graph-legend-item"><i style={{ background: NODE_COLORS.note }} />Notes</span>
         <span className="graph-legend-item"><i style={{ background: NODE_COLORS.flashcard }} />Flashcards</span>
         <span className="graph-legend-item"><i className="graph-legend-tag" />Tags</span>
+        <span className="graph-legend-item"><i className="graph-legend-linked" />Note links</span>
         <span className="graph-legend-item"><i className="graph-legend-semantic" />Related content</span>
       </div>
 

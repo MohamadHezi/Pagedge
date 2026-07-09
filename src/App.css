@@ -4741,6 +4741,14 @@
   border-top: 2px dotted #f5a623;
 }
 
+.graph-legend-linked {
+  width: 16px;
+  height: 0;
+  border-radius: 0;
+  background: transparent;
+  border-top: 2px solid rgba(255, 214, 160, 0.7);
+}
+
 .graph-hint {
   position: absolute;
   bottom: 18px;

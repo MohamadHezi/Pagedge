@@ -131,7 +131,7 @@ export interface ChatMessage {
 
 export type GraphNodeType = 'pdf' | 'note' | 'flashcard' | 'tag';
 
-export type GraphEdgeKind = 'citation' | 'derived' | 'tagged' | 'semantic';
+export type GraphEdgeKind = 'citation' | 'derived' | 'tagged' | 'semantic' | 'linked';
 
 export interface GraphNode {
   id: string;            // type-prefixed unique id, e.g. "pdf:<uuid>" / "tag:<name>"
