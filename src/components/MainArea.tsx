@@ -3,10 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { PdfViewer } from "./PdfViewer";
 import { GraphView } from "./GraphView";
+import { DeckManager } from "./DeckManager";
 import { ingestPdf } from "../services/ingestionService";
 
 export function MainArea() {
-  const { addPdf, selectedPdfId, pdfs, selectPdf, graphViewOpen } = useStore();
+  const { addPdf, selectedPdfId, pdfs, selectPdf, graphViewOpen, deckManagerOpen } = useStore();
   const selectedPdf = pdfs.find((p) => p.id === selectedPdfId) ?? null;
   const [isDragging, setIsDragging] = useState(false);
 
@@ -64,7 +65,9 @@ export function MainArea() {
 
   return (
     <main className="main-area" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
-      {graphViewOpen ? (
+      {deckManagerOpen ? (
+        <DeckManager />
+      ) : graphViewOpen ? (
         <GraphView />
       ) : selectedPdf ? (
         <PdfViewer filePath={selectedPdf.filepath} pdfId={selectedPdf.id} />

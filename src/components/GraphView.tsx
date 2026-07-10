@@ -224,7 +224,7 @@ function buildGraph(
   }
 
   for (const card of cards) {
-    const srcPdfId = pdfIds.has(card.pdf_id) ? card.pdf_id : null;
+    const srcPdfId = card.pdf_id && pdfIds.has(card.pdf_id) ? card.pdf_id : null;
     const pos = jitterNear(srcPdfId);
     push({
       id: `card:${card.id}`, refId: card.id, type: 'flashcard',

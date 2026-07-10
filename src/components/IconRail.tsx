@@ -1,17 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
-import type { Flashcard } from '../types';
 
 export function IconRail() {
-  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId, isAuthenticated, requireAuth, startReview, graphViewOpen, setGraphViewOpen } = useStore();
-
-  const handleFlashcardDecksClick = async () => {
-    const json = await invoke<string>('get_all_flashcards');
-    // Already ordered least-confident-first by get_all_flashcards; the whole
-    // deck loads — filtering to low-confidence happens inside ReviewMode.
-    const all: Flashcard[] = JSON.parse(json);
-    startReview(all);
-  };
+  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId, isAuthenticated, requireAuth, graphViewOpen, setGraphViewOpen, deckManagerOpen, setDeckManagerOpen } = useStore();
 
   return (
     <nav className="icon-rail">
@@ -24,7 +14,7 @@ export function IconRail() {
       <div className="ir-nav">
         {/* 1. Library — click while reading to return to welcome dashboard */}
         <button
-          className={`ir-btn${!selectedPdfId && !graphViewOpen ? " ir-btn--active" : ""}`}
+          className={`ir-btn${!selectedPdfId && !graphViewOpen && !deckManagerOpen ? " ir-btn--active" : ""}`}
           title={selectedPdfId ? "Back to Library" : "Library"}
           onClick={() => selectPdf(null)}
         >
@@ -58,7 +48,11 @@ export function IconRail() {
         </button>
 
         {/* 4. Flashcard Decks */}
-        <button className="ir-btn" title="Flashcard Decks" onClick={handleFlashcardDecksClick}>
+        <button
+          className={`ir-btn${deckManagerOpen ? " ir-btn--active" : ""}`}
+          title="Flashcard Decks"
+          onClick={() => setDeckManagerOpen(!deckManagerOpen)}
+        >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <rect x="2" y="6" width="20" height="14" rx="2" />
             <path d="M16 6V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />

@@ -1947,7 +1947,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
             <button
               className="flash-gen-toast-btn"
               onClick={() => {
-                startReview([...flashcards].sort((a, b) => a.page - b.page));
+                startReview([...flashcards].sort((a, b) => (a.page ?? 0) - (b.page ?? 0)));
                 setFlashGenResult(null);
               }}
             >

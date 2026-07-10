@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, ReviewFilter, OutlineItem } from "../types";
+import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, Deck, ReviewFilter, OutlineItem } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
 import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending, clearPullCursor } from "../services/syncService";
@@ -250,6 +250,22 @@ interface AppState {
   setIsGeneratingFlashcards: (b: boolean) => void;
   generationProgress: { done: number; total: number } | null;
   setGenerationProgress: (p: { done: number; total: number } | null) => void;
+
+  // ── Deck Manager ──────────────────────────────────────────────────────────
+  // Replaces the center panel with the flashcard Deck Manager when true
+  // (same pattern as graphViewOpen). selectPdf always resets it.
+  deckManagerOpen: boolean;
+  setDeckManagerOpen: (open: boolean) => void;
+  decks: Deck[];
+  loadDecks: () => Promise<void>;
+  createDeck: (name: string) => Promise<Deck>;
+  renameDeck: (id: string, name: string) => Promise<void>;
+  deleteDeck: (id: string) => Promise<void>;
+  // Whole-library card list backing the Deck Manager (the per-PDF
+  // `flashcards` array only ever holds the open PDF's cards). Kept patched
+  // by addFlashcard/removeFlashcard/updateFlashcardLocal after loading.
+  allCards: Flashcard[];
+  loadAllCards: () => Promise<void>;
 
   // ── Tags ──────────────────────────────────────────────────────────────────────
   suggestedTags: string[];
@@ -520,7 +536,7 @@ export const useStore = create<AppState>((set) => ({
   },
 
   selectPdf: (id) => {
-    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false });
+    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false });
     if (id) {
       const pdf = useStore.getState().pdfs.find((p) => p.id === id);
       if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
@@ -687,7 +703,7 @@ export const useStore = create<AppState>((set) => ({
 
   // ── Graph view (knowledge map) ───────────────────────────────────────────────
   graphViewOpen: false,
-  setGraphViewOpen: (open) => set({ graphViewOpen: open }),
+  setGraphViewOpen: (open) => set(open ? { graphViewOpen: true, deckManagerOpen: false } : { graphViewOpen: false }),
 
   // ── Export ────────────────────────────────────────────────────────────────────
   exportDialogOpen: false,
@@ -774,26 +790,38 @@ export const useStore = create<AppState>((set) => ({
   },
 
   addFlashcard: (f: Flashcard) => {
-    set((state) => ({ flashcards: [...state.flashcards, f] }));
-    schedulePush(f.pdf_id);
+    // allCards is replaced wholesale by loadAllCards when the Deck Manager
+    // opens, so appending here just keeps an already-loaded list live.
+    set((state) => ({
+      flashcards: [...state.flashcards, f],
+      allCards: [...state.allCards, f],
+    }));
+    // Custom cards have no pdf_id and live outside the per-PDF sync contract.
+    if (f.pdf_id) schedulePush(f.pdf_id);
   },
 
   removeFlashcard: (id: string) =>
     set((state) => {
-      const removed = state.flashcards.find((f) => f.id === id);
-      if (removed) schedulePush(removed.pdf_id);
-      return { flashcards: state.flashcards.filter((f) => f.id !== id) };
+      const removed = state.flashcards.find((f) => f.id === id) ?? state.allCards.find((f) => f.id === id);
+      if (removed?.pdf_id) schedulePush(removed.pdf_id);
+      return {
+        flashcards: state.flashcards.filter((f) => f.id !== id),
+        allCards: state.allCards.filter((f) => f.id !== id),
+      };
     }),
 
   updateFlashcardLocal: (id: string, changes: Partial<Flashcard>) =>
     set((state) => {
-      const updated = state.flashcards.map((f) => (f.id === id ? { ...f, ...changes } : f));
-      const card = updated.find((f) => f.id === id);
-      if (card) schedulePush(card.pdf_id);
+      const patch = (list: Flashcard[]) => list.map((f) => (f.id === id ? { ...f, ...changes } : f));
+      const updated = patch(state.flashcards);
+      const allCards = patch(state.allCards);
+      const card = updated.find((f) => f.id === id) ?? allCards.find((f) => f.id === id);
+      // Deck moves are local-only metadata — only content/confidence changes push.
+      const contentChanged = Object.keys(changes).some((k) => k !== 'deck_id');
+      if (card?.pdf_id && contentChanged) schedulePush(card.pdf_id);
       // Also patch the review-session copies so the mastery counter and the
       // low-confidence filter reflect grades made mid-session.
-      const patch = (list: Flashcard[]) => list.map((f) => (f.id === id ? { ...f, ...changes } : f));
-      return { flashcards: updated, reviewDeck: patch(state.reviewDeck), reviewQueue: patch(state.reviewQueue) };
+      return { flashcards: updated, allCards, reviewDeck: patch(state.reviewDeck), reviewQueue: patch(state.reviewQueue) };
     }),
 
   reviewDeck: [],
@@ -820,6 +848,42 @@ export const useStore = create<AppState>((set) => ({
   setIsGeneratingFlashcards: (b) => set({ isGeneratingFlashcards: b }),
   generationProgress: null,
   setGenerationProgress: (p) => set({ generationProgress: p }),
+
+  // ── Deck Manager ──────────────────────────────────────────────────────────
+  deckManagerOpen: false,
+  setDeckManagerOpen: (open) => set(open ? { deckManagerOpen: true, graphViewOpen: false } : { deckManagerOpen: false }),
+
+  decks: [],
+  loadDecks: async () => {
+    const json = await invoke<string>('get_decks');
+    set({ decks: JSON.parse(json) });
+  },
+  createDeck: async (name: string) => {
+    const json = await invoke<string>('create_deck', { name });
+    const deck: Deck = JSON.parse(json);
+    set((state) => ({ decks: [...state.decks, deck] }));
+    return deck;
+  },
+  renameDeck: async (id: string, name: string) => {
+    const json = await invoke<string>('rename_deck', { id, name });
+    const deck: Deck = JSON.parse(json);
+    set((state) => ({ decks: state.decks.map((d) => (d.id === id ? deck : d)) }));
+  },
+  deleteDeck: async (id: string) => {
+    await invoke('delete_deck', { id });
+    // The Rust side un-files the deck's cards (deck_id → NULL); mirror that.
+    set((state) => ({
+      decks: state.decks.filter((d) => d.id !== id),
+      allCards: state.allCards.map((f) => (f.deck_id === id ? { ...f, deck_id: null } : f)),
+      flashcards: state.flashcards.map((f) => (f.deck_id === id ? { ...f, deck_id: null } : f)),
+    }));
+  },
+
+  allCards: [],
+  loadAllCards: async () => {
+    const json = await invoke<string>('get_all_flashcards');
+    set({ allCards: JSON.parse(json) });
+  },
 
   // ── Tags ──────────────────────────────────────────────────────────────────────
   suggestedTags: [],

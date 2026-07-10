@@ -491,11 +491,12 @@ pub fn materialize_pending_pdf_annotations(
 
         created_flashcards.push(Flashcard {
             id: f.id,
-            source_highlight_id: f.source_highlight_id,
-            pdf_id: pdf_id.clone(),
-            page: f.page,
+            source_highlight_id: Some(f.source_highlight_id),
+            pdf_id: Some(pdf_id.clone()),
+            page: Some(f.page),
             front: f.front,
             back: f.back,
+            deck_id: None,
             confidence_level: f.confidence_level,
             last_reviewed_at: f.last_reviewed_at,
             created_at: updated_at.clone(),
@@ -1328,11 +1329,14 @@ pub fn delete_text_box(app: AppHandle, id: String) -> Result<(), String> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Flashcard {
     pub id: String,
-    pub source_highlight_id: String,
-    pub pdf_id: String,
-    pub page: i64,
+    // Nullable since custom (user-authored) cards have no source highlight,
+    // PDF, or page. AI-generated cards always carry all three.
+    pub source_highlight_id: Option<String>,
+    pub pdf_id: Option<String>,
+    pub page: Option<i64>,
     pub front: String,
     pub back: String,
+    pub deck_id: Option<String>,
     pub confidence_level: i64,
     pub last_reviewed_at: Option<String>,
     pub created_at: String,
@@ -1353,11 +1357,12 @@ fn row_to_flashcard(row: &rusqlite::Row<'_>) -> rusqlite::Result<Flashcard> {
         created_at:          row.get(8)?,
         updated_at:          row.get(9)?,
         deleted_at:          row.get(10)?,
+        deck_id:             row.get(11)?,
     })
 }
 
 const FC_SELECT: &str =
-    "SELECT id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at, deleted_at FROM flashcards";
+    "SELECT id, source_highlight_id, pdf_id, page, front, back, confidence_level, last_reviewed_at, created_at, updated_at, deleted_at, deck_id FROM flashcards";
 
 #[tauri::command]
 pub fn add_flashcard(
@@ -1380,7 +1385,44 @@ pub fn add_flashcard(
     .map_err(|e| e.to_string())?;
 
     let card = Flashcard {
-        id, source_highlight_id, pdf_id, page, front, back,
+        id,
+        source_highlight_id: Some(source_highlight_id),
+        pdf_id: Some(pdf_id),
+        page: Some(page),
+        front, back, deck_id: None,
+        confidence_level: 0, last_reviewed_at: None,
+        created_at: now.clone(), updated_at: now,
+        deleted_at: None,
+    };
+    serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+// Custom (user-authored) card: no source highlight, no PDF, no page —
+// it lives only in the deck it was created in (or unfiled).
+#[tauri::command]
+pub fn add_custom_flashcard(
+    app: AppHandle,
+    front: String,
+    back: String,
+    deck_id: Option<String>,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO flashcards (id, source_highlight_id, pdf_id, page, front, back, deck_id, confidence_level, last_reviewed_at, created_at, updated_at)
+         VALUES (?1, NULL, NULL, NULL, ?2, ?3, ?4, 0, NULL, ?5, ?5)",
+        rusqlite::params![id, front, back, deck_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let card = Flashcard {
+        id,
+        source_highlight_id: None,
+        pdf_id: None,
+        page: None,
+        front, back, deck_id,
         confidence_level: 0, last_reviewed_at: None,
         created_at: now.clone(), updated_at: now,
         deleted_at: None,
@@ -1464,18 +1506,119 @@ pub fn update_flashcard_fields(
     back: Option<String>,
 ) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE flashcards SET
-            front = COALESCE(?1, front),
-            back  = COALESCE(?2, back)
-         WHERE id = ?3",
-        rusqlite::params![front, back, id],
+            front      = COALESCE(?1, front),
+            back       = COALESCE(?2, back),
+            updated_at = ?3
+         WHERE id = ?4",
+        rusqlite::params![front, back, now, id],
     )
     .map_err(|e| e.to_string())?;
     let card = conn
         .query_row(&format!("{FC_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_flashcard)
         .map_err(|e| e.to_string())?;
     serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+// Deck assignment is separate from update_flashcard_fields because COALESCE
+// can't distinguish "leave unchanged" from "set to NULL (unfile)". Deck
+// membership is local-only metadata, so updated_at is deliberately not
+// bumped — a deck move must never look like a content change to sync.
+#[tauri::command]
+pub fn assign_flashcard_deck(
+    app: AppHandle,
+    id: String,
+    deck_id: Option<String>,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE flashcards SET deck_id = ?1 WHERE id = ?2",
+        rusqlite::params![deck_id, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let card = conn
+        .query_row(&format!("{FC_SELECT} WHERE id = ?1"), rusqlite::params![id], row_to_flashcard)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&card).map_err(|e| e.to_string())
+}
+
+// ── Decks (local-only, not synced) ───────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Deck {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn row_to_deck(row: &rusqlite::Row<'_>) -> rusqlite::Result<Deck> {
+    Ok(Deck {
+        id:         row.get(0)?,
+        name:       row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+    })
+}
+
+#[tauri::command]
+pub fn create_deck(app: AppHandle, name: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO decks (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+        rusqlite::params![id, name, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let deck = Deck { id, name, created_at: now.clone(), updated_at: now };
+    serde_json::to_string(&deck).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_decks(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, created_at, updated_at FROM decks ORDER BY created_at ASC")
+        .map_err(|e| e.to_string())?;
+    let decks: Vec<Deck> = stmt
+        .query_map([], row_to_deck)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    serde_json::to_string(&decks).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_deck(app: AppHandle, id: String, name: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE decks SET name = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![name, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let deck = conn
+        .query_row(
+            "SELECT id, name, created_at, updated_at FROM decks WHERE id = ?1",
+            rusqlite::params![id],
+            row_to_deck,
+        )
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&deck).map_err(|e| e.to_string())
+}
+
+// Deleting a deck un-files its cards (deck_id → NULL); it never deletes them.
+#[tauri::command]
+pub fn delete_deck(app: AppHandle, id: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE flashcards SET deck_id = NULL WHERE deck_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM decks WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

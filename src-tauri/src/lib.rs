@@ -1,9 +1,11 @@
 pub mod commands;
 
 use commands::{
-    add_drawing, add_flashcard, add_highlight, add_pdf, add_text_box, create_dir_if_not_exists,
-    create_folder, create_note, delete_chunks_for_pdf, delete_drawing, delete_flashcard,
+    add_custom_flashcard, add_drawing, add_flashcard, add_highlight, add_pdf, add_text_box,
+    assign_flashcard_deck, create_deck, create_dir_if_not_exists,
+    create_folder, create_note, delete_chunks_for_pdf, delete_deck, delete_drawing, delete_flashcard,
     delete_folder, delete_highlight, delete_note, delete_pdf, delete_text_box,
+    get_decks, rename_deck,
     export_annotated_pdf, extract_pdf_text,
     get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
     get_flashcards, get_folders, get_highlights, get_highlights_by_color, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
@@ -145,18 +147,27 @@ pub fn run() {
 
                 CREATE INDEX IF NOT EXISTS idx_text_boxes_pdf ON text_boxes(pdf_id, page);
 
+                CREATE TABLE IF NOT EXISTS decks (
+                    id         TEXT PRIMARY KEY,
+                    name       TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS flashcards (
                     id                  TEXT PRIMARY KEY,
-                    source_highlight_id TEXT NOT NULL,
-                    pdf_id              TEXT NOT NULL,
-                    page                INTEGER NOT NULL,
+                    source_highlight_id TEXT,
+                    pdf_id              TEXT,
+                    page                INTEGER,
                     front               TEXT NOT NULL,
                     back                TEXT NOT NULL,
+                    deck_id             TEXT,
                     confidence_level    INTEGER NOT NULL DEFAULT 0,
                     last_reviewed_at    TEXT,
                     created_at          TEXT NOT NULL,
                     FOREIGN KEY (pdf_id) REFERENCES pdfs(id),
-                    FOREIGN KEY (source_highlight_id) REFERENCES highlights(id)
+                    FOREIGN KEY (source_highlight_id) REFERENCES highlights(id),
+                    FOREIGN KEY (deck_id) REFERENCES decks(id)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_flashcards_pdf ON flashcards(pdf_id);
@@ -251,6 +262,60 @@ pub fn run() {
             let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN ease_factor", []);
             let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN repetitions", []);
             let _ = conn.execute("ALTER TABLE flashcards DROP COLUMN next_review", []);
+
+            // ── Decks + custom cards migration ──────────────────────────────────
+            // Custom (user-authored) cards have no source highlight/PDF/page, so
+            // those columns must become nullable. SQLite can't drop NOT NULL in
+            // place — existing installs get a guarded table rebuild. The pragma
+            // check makes it idempotent: fresh installs (created nullable above)
+            // and already-rebuilt DBs skip it. deck_id is added by plain ALTER
+            // first so the rebuild's column copy list is identical either way.
+            let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN deck_id TEXT", []);
+            let needs_nullable_rebuild = conn
+                .query_row(
+                    "SELECT \"notnull\" FROM pragma_table_info('flashcards') WHERE name = 'source_highlight_id'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|n| n == 1)
+                .unwrap_or(false);
+            if needs_nullable_rebuild {
+                let rebuilt = conn.execute_batch(
+                    "BEGIN;
+                     CREATE TABLE flashcards_new (
+                         id                  TEXT PRIMARY KEY,
+                         source_highlight_id TEXT,
+                         pdf_id              TEXT,
+                         page                INTEGER,
+                         front               TEXT NOT NULL,
+                         back                TEXT NOT NULL,
+                         deck_id             TEXT,
+                         confidence_level    INTEGER NOT NULL DEFAULT 0,
+                         last_reviewed_at    TEXT,
+                         created_at          TEXT NOT NULL,
+                         sync_version        INTEGER DEFAULT 0,
+                         deleted_at          TEXT,
+                         server_id           TEXT,
+                         updated_at          TEXT,
+                         FOREIGN KEY (pdf_id) REFERENCES pdfs(id),
+                         FOREIGN KEY (source_highlight_id) REFERENCES highlights(id),
+                         FOREIGN KEY (deck_id) REFERENCES decks(id)
+                     );
+                     INSERT INTO flashcards_new
+                         (id, source_highlight_id, pdf_id, page, front, back, deck_id, confidence_level, last_reviewed_at, created_at, sync_version, deleted_at, server_id, updated_at)
+                         SELECT id, source_highlight_id, pdf_id, page, front, back, deck_id, confidence_level, last_reviewed_at, created_at, sync_version, deleted_at, server_id, updated_at
+                         FROM flashcards;
+                     DROP TABLE flashcards;
+                     ALTER TABLE flashcards_new RENAME TO flashcards;
+                     CREATE INDEX IF NOT EXISTS idx_flashcards_pdf ON flashcards(pdf_id);
+                     COMMIT;",
+                );
+                if rebuilt.is_err() {
+                    // Leave the old (still functional) table intact rather than
+                    // blocking startup on a half-applied rebuild.
+                    let _ = conn.execute_batch("ROLLBACK;");
+                }
+            }
 
             let _ = conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pdfs_content_hash ON pdfs(content_hash)",
@@ -384,12 +449,18 @@ pub fn run() {
             update_text_box,
             delete_text_box,
             add_flashcard,
+            add_custom_flashcard,
             get_flashcards,
             get_all_flashcards,
             highlight_exists,
             delete_flashcard,
             update_flashcard_review,
             update_flashcard_fields,
+            assign_flashcard_deck,
+            create_deck,
+            get_decks,
+            rename_deck,
+            delete_deck,
             upsert_flashcard,
             export_annotated_pdf,
             reveal_in_folder,

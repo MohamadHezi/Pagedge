@@ -104,12 +104,14 @@ function toServerNote(n: Note): ServerNote {
   };
 }
 
+// Callers must filter out custom cards (null source_highlight_id/pdf_id/page)
+// first — the sync contract is per-PDF and only covers highlight-sourced cards.
 function toServerFlashcard(f: Flashcard): ServerFlashcard {
   return {
     id: f.id,
     sync_version: versionOf(f.updated_at),
-    source_highlight_id: f.source_highlight_id,
-    page: f.page,
+    source_highlight_id: f.source_highlight_id!,
+    page: f.page!,
     front: f.front,
     back: f.back,
     confidence_level: f.confidence_level,
@@ -169,6 +171,9 @@ function fromServerFlashcard(row: ServerFlashcard, pdfId: string): Flashcard {
     page: row.page,
     front: row.front,
     back: row.back,
+    // Deck membership is local-only and never on the wire; applyServerFlashcard
+    // re-attaches the local assignment before this reaches the store.
+    deck_id: null,
     // ?? fallbacks cover rows pushed before the SRS→confidence migration,
     // which lack both fields — they surface as unreviewed.
     confidence_level: row.confidence_level ?? 0,
@@ -298,7 +303,10 @@ async function loadEntitiesForPush(pdfId: string): Promise<ServerEntities> {
   return {
     highlights: highlights.map(toServerHighlight),
     notes: notes.map(toServerNote),
-    flashcards: flashcards.map(toServerFlashcard),
+    // Custom cards (no source highlight) are local-only and never pushed.
+    // get_flashcards is pdf_id-scoped so none should appear here, but filter
+    // defensively rather than push a null source_highlight_id upstream.
+    flashcards: flashcards.filter((f) => f.source_highlight_id && f.pdf_id).map(toServerFlashcard),
   };
 }
 
@@ -785,7 +793,9 @@ async function applyServerFlashcard(row: ServerFlashcard, pdfId: string): Promis
     return true;
   }
 
-  const card = fromServerFlashcard(row, pdfId);
+  // Server rows never carry deck membership (local-only) — keep whatever
+  // deck this card is already filed in rather than clobbering it to null.
+  const card = { ...fromServerFlashcard(row, pdfId), deck_id: local?.deck_id ?? null };
 
   if (isCurrentPdf) {
     useStore.setState((s) => ({

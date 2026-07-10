@@ -72,7 +72,8 @@ export function ReviewMode() {
         // belonging to PDFs that aren't loaded into the store at all, so that
         // push would silently never fire. Schedule directly off the card
         // itself, which always carries the right pdf_id regardless of source.
-        schedulePush(card.pdf_id);
+        // Custom cards (no pdf_id) are local-only and never push.
+        if (card.pdf_id) schedulePush(card.pdf_id);
       } catch (err) {
         console.error("[review] failed to persist confidence", err);
       }
@@ -82,7 +83,8 @@ export function ReviewMode() {
   );
 
   const handleSourceJump = useCallback(() => {
-    if (!card) return;
+    // Custom cards have no source PDF/page to jump to.
+    if (!card?.pdf_id || card.page == null) return;
     setReviewModeOpen(false);
     if (card.pdf_id !== selectedPdfId) {
       setPendingJumpPage(card.page);
@@ -164,9 +166,11 @@ export function ReviewMode() {
             <div className="review-card-face review-card-back">{card.back}</div>
           </div>
         </div>
-        <button className="review-source-link" onClick={handleSourceJump}>
-          Jump to source · page {card.page}
-        </button>
+        {card.pdf_id && card.page != null && (
+          <button className="review-source-link" onClick={handleSourceJump}>
+            Jump to source · page {card.page}
+          </button>
+        )}
         {flipped && (
           <div className="review-grading-row">
             <button className="review-grade-btn review-grade-low" onClick={() => handleGrade(1)}>

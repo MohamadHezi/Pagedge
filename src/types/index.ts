@@ -99,17 +99,28 @@ export interface TextBox {
 
 export interface Flashcard {
   id: string;
-  source_highlight_id: string;
-  pdf_id: string;
-  page: number;
+  /** Null for custom (user-authored) cards, which have no source highlight/PDF/page. */
+  source_highlight_id: string | null;
+  pdf_id: string | null;
+  page: number | null;
   front: string;
   back: string;
+  /** Custom deck membership; null = unfiled (shows under its PDF section / All cards). */
+  deck_id: string | null;
   /** 0 = unreviewed, 1 = low, 2 = medium, 3 = high/mastered */
   confidence_level: number;
   last_reviewed_at: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+}
+
+/** User-created flashcard deck. Local-only — never synced. */
+export interface Deck {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Manual confidence rating a user assigns after flipping a card. */
