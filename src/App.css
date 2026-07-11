@@ -34,6 +34,7 @@
 .ir-logo {
   width: 32px;
   height: 32px;
+  padding: 0;
   background: var(--bg-container);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
@@ -477,6 +478,7 @@
 
 /* ── Main area ── */
 .main-area {
+  position: relative;
   flex: 1;
   overflow: hidden;
   background: var(--bg-surface-dim);
@@ -653,7 +655,7 @@
   overflow: hidden;
 }
 
-/* ── Panel toggle buttons (absolute inside pdf-viewer) ── */
+/* ── Panel toggle buttons (left: absolute inside main-area; right: absolute inside pdf-viewer) ── */
 .panel-toggle {
   position: absolute;
   top: 12px;
@@ -1313,6 +1315,12 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.note-editor-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .note-delete-btn {
   color: var(--text-muted) !important;
 }
@@ -1336,6 +1344,13 @@
   gap: 10px;
 }
 
+/* Full-page usage (NoteWorkspace) — same editor, wider canvas, no panel-width cap */
+.note-editor-wrap--fullpage .note-editor-workspace {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
 /* Citation pill — compact, borderless, inline */
 .note-citation-pill {
   display: inline-flex;
@@ -1364,6 +1379,76 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 160px;
+}
+
+/* ── Wiki-link ([[...]]) autocomplete popover ── */
+.wiki-link-popover {
+  position: fixed;
+  z-index: 600;
+  width: 240px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-toolbar);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  transform-origin: top left;
+  animation: wiki-popup-in 0.1s ease;
+}
+
+@keyframes wiki-popup-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.wiki-link-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wiki-link-item--active {
+  background: rgba(245, 166, 35, 0.16);
+  color: var(--text-primary);
+}
+
+.wiki-link-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.wiki-link-item--active .wiki-link-icon {
+  color: var(--accent-container);
+}
+
+.wiki-link-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wiki-link-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .note-citation-pill-page {
@@ -1564,11 +1649,30 @@
 .note-editor-workspace .w-md-editor-text-pre,
 .note-editor-workspace .w-md-editor-text-textarea {
   font-family: var(--font-sans) !important;
-  font-size: 13px !important;
+  font-size: var(--note-font-size, 13px) !important;
   line-height: 1.65 !important;
   letter-spacing: 0 !important;
   overflow-wrap: break-word !important;
   word-break: break-word !important;
+}
+
+/* Line-wrap OFF (Settings → Editor): disable wrapping consistently across
+   every layer so the textarea/pre/span caret positions stay in sync — a
+   partial application here reproduces the caret-drift bug the block above
+   exists to prevent. white-space: pre (not nowrap) preserves newlines. */
+.note-editor-workspace.note-editor--nowrap .w-md-editor *,
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text,
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text-input,
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text-pre,
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text-textarea {
+  white-space: pre !important;
+  overflow-wrap: normal !important;
+  word-break: normal !important;
+}
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text-input,
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text-pre,
+.note-editor-workspace.note-editor--nowrap .w-md-editor-text-textarea {
+  overflow-x: auto !important;
 }
 
 .note-editor-workspace .w-md-editor-text,
@@ -1580,7 +1684,7 @@
 }
 
 .note-editor-workspace .wmde-markdown {
-  font-size: 13px !important;
+  font-size: var(--note-font-size, 13px) !important;
   line-height: 1.65 !important;
   background: transparent !important;
 }
@@ -1860,6 +1964,46 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 10px 10px 8px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.settings-tab:hover {
+  color: var(--text-secondary);
+}
+
+.settings-tab--active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.settings-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-slider {
+  width: 100%;
+  accent-color: var(--accent);
 }
 
 .settings-body {
@@ -3251,6 +3395,47 @@
 
 .nav-new-entry-btn:hover .nav-new-entry-icon {
   background: var(--accent);
+}
+
+.nav-new-entry-wrap {
+  position: relative;
+}
+
+.nav-new-entry-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(25, 18, 10, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 4px;
+  gap: 2px;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.nav-new-entry-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.nav-new-entry-menu-item:hover {
+  background: var(--bg-container-low);
+  color: var(--text-primary);
 }
 
 /* "Archive & Trash" low-contrast row */
@@ -4701,7 +4886,8 @@
 .graph-hud {
   position: absolute;
   top: 14px;
-  left: 16px;
+  /* clears the floating library-toggle button (.panel-toggle--left) */
+  left: 54px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -5012,6 +5198,134 @@
   overflow: hidden;
 }
 
+/* ---- Standalone Note Workspace (Notebook/Canvas Document, main-area view) ---- */
+.note-workspace {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-surface-dim);
+  overflow: hidden;
+}
+.note-workspace--empty {
+  align-items: center;
+  justify-content: center;
+}
+.note-workspace-empty-text {
+  color: var(--text-muted);
+}
+.nw-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 200, 128, 0.10);
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.nw-export-btn:hover:not(:disabled) {
+  background: rgba(255, 200, 128, 0.20);
+}
+.nw-export-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.nw-export-toast {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-radius: 10px;
+  background: rgba(25, 18, 10, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 30;
+}
+.nw-export-toast--err {
+  color: #ff8080;
+  border-color: rgba(255, 80, 80, 0.35);
+}
+.nw-export-toast-action {
+  border: none;
+  background: rgba(255, 200, 128, 0.14);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.nw-export-toast-action:hover {
+  background: rgba(255, 200, 128, 0.24);
+}
+
+/* ── Global Chat (cross-library) ── */
+.global-chat-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-surface-dim);
+  overflow: hidden;
+}
+
+.gcv-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  /* left padding clears the floating library-toggle button (.panel-toggle--left,
+     absolute at top:12px/left:12px, 30px wide) so it never sits over the title */
+  padding: 22px 26px 14px 54px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.gcv-header-text {
+  min-width: 0;
+}
+
+.gcv-title {
+  font-family: var(--font-serif);
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.gcv-meta {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.gcv-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.gcv-messages {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 /* â”€â”€ Deck sidebar â”€â”€ */
 .dm-sidebar {
   width: 232px;
@@ -5019,7 +5333,10 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 18px 10px;
+  /* top padding clears the floating library-toggle button (.panel-toggle--left,
+     absolute at top:12px/left:12px, 30px tall) so it never sits over the
+     "Decks" heading */
+  padding: 54px 10px 18px;
   overflow-y: auto;
   background: rgba(19, 13, 6, 0.55);
   border-right: 1px solid var(--border-glass);
@@ -5546,5 +5863,72 @@
   margin: 0 auto;
   max-width: 380px;
   line-height: 1.6;
+}
+
+/* ── Trash view ── */
+.trash-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-surface-dim);
+  overflow-y: auto;
+}
+
+.trash-list {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 8px 0;
+}
+
+.trash-item {
+  padding: 8px 26px;
+  cursor: default;
+}
+
+.trash-item-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.trash-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.trash-item:hover .trash-item-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.trash-item .trash-item-actions .pdf-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.trash-restore-btn {
+  font-size: 10px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-container-low);
+  border: 1px solid var(--border-glass);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: color 0.1s, background 0.1s;
+}
+
+.trash-restore-btn:hover {
+  color: var(--accent);
+  background: var(--bg-container-high);
 }
 

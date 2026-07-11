@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
 import { HIGHLIGHT_COLORS } from '../constants/highlights';
+import { bytesToFloat32 } from '../utils/embeddings';
 import type { Note, Flashcard, GraphNode, GraphEdge, GraphNodeType, GraphEdgeKind, Pdf } from '../types';
 
 // Node fills — warm amber ramp from the design tokens; flashcards keep the
@@ -38,18 +39,6 @@ const SEMANTIC_MAX_PER_DOC = 3;
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
-
-// Embeddings are stored as raw little-endian f32 bytes (same decode as
-// SearchModal's bytesToFloat32).
-function bytesToFloat32(bytes: number[]): Float32Array {
-  const buf = new ArrayBuffer(bytes.length);
-  const u8 = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i++) u8[i] = bytes[i];
-  const dv = new DataView(buf);
-  const floats = new Float32Array(bytes.length / 4);
-  for (let i = 0; i < floats.length; i++) floats[i] = dv.getFloat32(i * 4, true);
-  return floats;
 }
 
 // Mean chunk embedding per PDF, L2-normalized so pair similarity below is a
@@ -619,6 +608,13 @@ export function GraphView() {
       const s = useStore.getState();
       if (n.type === 'pdf') {
         s.selectPdf(n.refId);
+        return;
+      }
+      // Standalone notes (no source PDF) open in the full-page Notebook
+      // workspace instead of falling through to the generic "no
+      // destination" info-card behavior tags and orphaned notes get.
+      if (n.type === 'note' && !n.pdfId) {
+        s.openStandaloneNote(n.refId);
         return;
       }
       if (n.type === 'tag' || !n.pdfId) {

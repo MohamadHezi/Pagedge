@@ -1,22 +1,40 @@
 import { useStore } from '../store';
 
 export function IconRail() {
-  const { setSettingsPanelOpen, setSearchModalOpen, selectPdf, selectedPdfId, isAuthenticated, requireAuth, graphViewOpen, setGraphViewOpen, deckManagerOpen, setDeckManagerOpen } = useStore();
+  const {
+    setSettingsPanelOpen, setSearchModalOpen, selectPdf, isAuthenticated, requireAuth,
+    graphViewOpen, setGraphViewOpen, deckManagerOpen, setDeckManagerOpen,
+    globalChatOpen, setGlobalChatOpen,
+    leftPanelOpen, setLeftPanelOpen, setExportDialogOpen, setReviewModeOpen,
+    setFeedbackModalOpen, closePaywall, clearSummary,
+  } = useStore();
+
+  const goHome = () => {
+    selectPdf(null);
+    setSettingsPanelOpen(false);
+    setSearchModalOpen(false);
+    setExportDialogOpen(false);
+    setReviewModeOpen(false);
+    setFeedbackModalOpen(false);
+    setGlobalChatOpen(false);
+    closePaywall();
+    clearSummary();
+  };
 
   return (
     <nav className="icon-rail">
-      {/* Brand mark */}
+      {/* Brand mark — global "go home and clear clutter" escape hatch */}
       <div className="ir-brand">
-        <div className="ir-logo">P</div>
+        <button className="ir-logo" title="Home" onClick={goHome}>P</button>
       </div>
 
       {/* Primary nav */}
       <div className="ir-nav">
-        {/* 1. Library — click while reading to return to welcome dashboard */}
+        {/* 1. Library — toggles the library sidebar's visibility */}
         <button
-          className={`ir-btn${!selectedPdfId && !graphViewOpen && !deckManagerOpen ? " ir-btn--active" : ""}`}
-          title={selectedPdfId ? "Back to Library" : "Library"}
-          onClick={() => selectPdf(null)}
+          className={`ir-btn${leftPanelOpen ? " ir-btn--active" : ""}`}
+          title={leftPanelOpen ? "Collapse Library" : "Expand Library"}
+          onClick={() => setLeftPanelOpen(!leftPanelOpen)}
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
@@ -61,8 +79,12 @@ export function IconRail() {
           </svg>
         </button>
 
-        {/* 5. AI Prompt Engine */}
-        <button className="ir-btn" title="AI Prompt Engine">
+        {/* 5. Global Chat — cross-library AI chat */}
+        <button
+          className={`ir-btn${globalChatOpen ? " ir-btn--active" : ""}`}
+          title="Global Chat"
+          onClick={() => setGlobalChatOpen(!globalChatOpen)}
+        >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
             <path d="M5 3v4" />
@@ -77,8 +99,8 @@ export function IconRail() {
       <div className="ir-bottom">
         <button className="ir-btn" title="Settings" onClick={() => setSettingsPanelOpen(true)}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" />
+            <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
           </svg>
         </button>
         <button

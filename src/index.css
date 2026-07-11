@@ -23,6 +23,9 @@
   --border-subtle:   #524534;   /* subdued separators, tile dividers */
   --border-glass:    rgba(159, 142, 122, 0.18);
 
+  /* ── User-configurable preferences (Settings → Editor) ── */
+  --note-font-size:   13px;   /* note editor + preview font size */
+
   /* ── Interactive accents ── */
   --accent:           #ffc880;   /* primary interactive, glyph glow */
   --accent-bright:    #ffd6a0;   /* hover/brightness variant */

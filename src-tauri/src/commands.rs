@@ -20,6 +20,7 @@ pub struct Pdf {
     pub last_opened: Option<String>,
     pub content_hash: Option<String>,
     pub is_pinned: bool,
+    pub deleted_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -98,8 +99,8 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
     // rows_changed == 0 means filepath already existed; fetch and return the
     // existing row so the frontend can deduplicate by id.
     let pdf = if rows_changed == 0 {
-        conn.query_row(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned
+        let mut pdf = conn.query_row(
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at
              FROM pdfs WHERE filepath = ?1",
             rusqlite::params![filepath],
             |row| {
@@ -115,10 +116,24 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
                     last_opened: row.get(8)?,
                     content_hash: row.get(9)?,
                     is_pinned: row.get::<_, i64>(10)? != 0,
+                    deleted_at: row.get(11)?,
                 })
             },
         )
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        // Re-importing a file whose row is currently trashed should un-trash it
+        // rather than leave an invisible zombie row that never shows in the Library.
+        if pdf.deleted_at.is_some() {
+            conn.execute(
+                "UPDATE pdfs SET deleted_at = NULL WHERE id = ?1",
+                rusqlite::params![pdf.id],
+            )
+            .map_err(|e| e.to_string())?;
+            pdf.deleted_at = None;
+        }
+
+        pdf
     } else {
         Pdf {
             id: new_id,
@@ -132,6 +147,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
             last_opened: None,
             content_hash: None,
             is_pinned: false,
+            deleted_at: None,
         }
     };
 
@@ -164,6 +180,64 @@ pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
     conn.execute("DELETE FROM pdfs WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn trash_pdf(app: AppHandle, id: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE pdfs SET deleted_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_pdf(app: AppHandle, id: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE pdfs SET deleted_at = NULL WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_trashed_pdfs(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at
+             FROM pdfs WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let pdfs: Vec<Pdf> = stmt
+        .query_map([], |row| {
+            Ok(Pdf {
+                id: row.get(0)?,
+                filename: row.get(1)?,
+                filepath: row.get(2)?,
+                folder_id: row.get(3)?,
+                page_count: row.get(4)?,
+                pages_read: row.get(5)?,
+                chunk_count: row.get(6)?,
+                ingested_at: row.get(7)?,
+                last_opened: row.get(8)?,
+                content_hash: row.get(9)?,
+                is_pinned: row.get::<_, i64>(10)? != 0,
+                deleted_at: row.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    serde_json::to_string(&pdfs).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -472,6 +546,7 @@ pub fn materialize_pending_pdf_annotations(
             created_at: updated_at.clone(),
             updated_at,
             deleted_at: None,
+            sketch_data: None,
         });
     }
 
@@ -680,6 +755,25 @@ pub fn get_highlights_by_color(app: AppHandle, color: String) -> Result<String, 
 }
 
 #[tauri::command]
+pub fn get_all_highlights(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(&format!(
+            "{HIGHLIGHT_SELECT} WHERE deleted_at IS NULL ORDER BY pdf_id, page ASC, position_y DESC"
+        ))
+        .map_err(|e| e.to_string())?;
+
+    let highlights: Vec<Highlight> = stmt
+        .query_map([], row_to_highlight)
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    serde_json::to_string(&highlights).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn delete_highlight(app: AppHandle, id: String) -> Result<(), String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
@@ -800,6 +894,7 @@ pub struct Note {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    pub sketch_data: Option<String>,
 }
 
 fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
@@ -815,12 +910,13 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         deleted_at: row.get(9)?,
+        sketch_data: row.get(10)?,
     })
 }
 
 const NOTE_SELECT: &str =
     "SELECT id, title, content_markdown, folder_id, source_pdf_id, source_page,
-            tags, created_at, updated_at, deleted_at FROM notes";
+            tags, created_at, updated_at, deleted_at, sketch_data FROM notes";
 
 #[tauri::command]
 pub fn create_note(
@@ -853,6 +949,7 @@ pub fn create_note(
         created_at: now.clone(),
         updated_at: now,
         deleted_at: None,
+        sketch_data: None,
     };
 
     serde_json::to_string(&note).map_err(|e| e.to_string())
@@ -901,6 +998,7 @@ pub fn update_note(
     title: Option<String>,
     content_markdown: Option<String>,
     tags: Option<Vec<String>>,
+    sketch_data: Option<String>,
 ) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
@@ -915,9 +1013,10 @@ pub fn update_note(
             title            = COALESCE(?1, title),
             content_markdown = COALESCE(?2, content_markdown),
             tags             = COALESCE(?3, tags),
-            updated_at       = ?4
-         WHERE id = ?5",
-        rusqlite::params![title, content_markdown, tags_json, now, id],
+            sketch_data      = COALESCE(?4, sketch_data),
+            updated_at       = ?5
+         WHERE id = ?6",
+        rusqlite::params![title, content_markdown, tags_json, sketch_data, now, id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -2024,6 +2123,55 @@ fn flatten_text_boxes_to_page(
     }
 }
 
+// Generic "save arbitrary text/JSON to disk" command — reusable beyond the
+// library export feature it was introduced for.
+#[tauri::command]
+pub fn save_text_file(app: AppHandle, default_filename: String, content: String) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let save_fp = app
+        .dialog()
+        .file()
+        .add_filter("JSON Files", &["json"])
+        .set_file_name(&default_filename)
+        .blocking_save_file();
+
+    let output_path = match save_fp {
+        Some(fp) => fp.to_string(),
+        None => return Ok(String::new()), // user cancelled
+    };
+
+    std::fs::write(&output_path, content).map_err(|e| e.to_string())?;
+    Ok(output_path)
+}
+
+// Generic "save arbitrary binary data to disk" command. Introduced for the
+// standalone-note "Export to PDF" feature: jsPDF builds the PDF entirely in
+// the frontend (no source PDF file to stamp annotations onto, unlike
+// export_annotated_pdf below), so the finished bytes are handed to Rust just
+// to drive a native Save-As dialog and write them — a Tauri webview's
+// browser-style `<a download>` click does not reliably surface a save
+// prompt or write to disk the way it would in an actual browser tab.
+#[tauri::command]
+pub fn save_binary_file(app: AppHandle, default_filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let save_fp = app
+        .dialog()
+        .file()
+        .add_filter("PDF Files", &["pdf"])
+        .set_file_name(&default_filename)
+        .blocking_save_file();
+
+    let output_path = match save_fp {
+        Some(fp) => fp.to_string(),
+        None => return Ok(String::new()), // user cancelled
+    };
+
+    std::fs::write(&output_path, &bytes).map_err(|e| e.to_string())?;
+    Ok(output_path)
+}
+
 #[tauri::command]
 pub fn export_annotated_pdf(
     app: AppHandle,
@@ -2281,8 +2429,8 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned
-             FROM pdfs ORDER BY ingested_at DESC",
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at
+             FROM pdfs WHERE deleted_at IS NULL ORDER BY ingested_at DESC",
         )
         .map_err(|e| e.to_string())?;
 
@@ -2300,6 +2448,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
                 last_opened: row.get(8)?,
                 content_hash: row.get(9)?,
                 is_pinned: row.get::<_, i64>(10)? != 0,
+                deleted_at: row.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?

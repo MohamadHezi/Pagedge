@@ -10,6 +10,7 @@ export interface Pdf {
   last_opened: string | null;
   content_hash: string | null;
   is_pinned: boolean;
+  deleted_at: string | null;
 }
 
 export interface PageText {
@@ -82,6 +83,15 @@ export interface Drawing {
   created_at: string;
 }
 
+/** Canonical intermediate format for the PDF-drawing copy/paste clipboard. */
+export interface SketchStroke {
+  id: string;
+  tool_type: 'pen' | 'arrow' | 'rectangle' | 'circle';
+  color: string;
+  stroke_width: number;
+  points: DrawPoint[];
+}
+
 export interface TextBox {
   id: string;
   pdf_id: string;
@@ -138,6 +148,30 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+}
+
+// ── Global Chat (cross-library) ─────────────────────────────────────────────
+
+export interface ChatCitation {
+  sourceId: string; // pdf id
+  page: number;
+}
+
+export interface GlobalChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  citations?: ChatCitation[]; // resolved once, at insert time
+}
+
+/** Full chunk row including raw embedding bytes — used by search and global chat. */
+export interface RawChunk {
+  id: string;
+  source_id: string;
+  page: number;
+  content: string;
+  embedding: number[]; // raw u8 bytes from Rust Vec<u8>
 }
 
 // ── Graph View (knowledge map) ─────────────────────────────────────────────

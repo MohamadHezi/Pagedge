@@ -7,15 +7,18 @@ use commands::{
     delete_folder, delete_highlight, delete_note, delete_pdf, delete_text_box,
     get_decks, rename_deck,
     export_annotated_pdf, extract_pdf_text,
-    get_all_chunks, get_all_flashcards, get_app_data_dir, get_chunks_for_pdf, get_drawings,
+    get_all_chunks, get_all_flashcards, get_all_highlights, get_app_data_dir, get_chunks_for_pdf, get_drawings,
     get_flashcards, get_folders, get_highlights, get_highlights_by_color, get_notes, get_outline, get_pdfs, get_setting, get_text_boxes,
+    get_trashed_pdfs,
     highlight_exists,
     delete_pending_pdf_annotation, get_all_pending_pdf_annotations, get_pending_pdf_annotation,
     materialize_pending_pdf_annotations, move_folder_to_parent, move_pdf_to_folder, open_file_dialog, read_file,
     rename_folder, rename_pdf, reorder_folders,
-    reveal_in_folder, set_folder_pinned, set_pdf_pinned, set_setting, store_chunks, store_outline, update_drawing_points,
+    restore_pdf,
+    reveal_in_folder, save_binary_file, save_text_file, set_folder_pinned, set_pdf_pinned, set_setting, store_chunks, store_outline, update_drawing_points,
     update_flashcard_fields, update_flashcard_review, update_highlight, update_last_opened,
     update_note, update_pdf_content_hash, update_pdf_ingestion_status, update_text_box,
+    trash_pdf,
     upsert_flashcard, upsert_highlight, upsert_note, upsert_pending_pdf_annotation,
 };
 use tauri::Manager;
@@ -225,6 +228,11 @@ pub fn run() {
             // ── Sync columns (Pro cross-device sync) ────────────────────────────
             let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN content_hash TEXT", []);
 
+            // ── Trash (soft-delete) ──────────────────────────────────────────────
+            // Local-only flag, distinct from the sync-tombstone deleted_at columns
+            // added to highlights/notes/flashcards below.
+            let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN deleted_at TEXT", []);
+
             let _ = conn.execute("ALTER TABLE highlights ADD COLUMN sync_version INTEGER DEFAULT 0", []);
             let _ = conn.execute("ALTER TABLE highlights ADD COLUMN deleted_at TEXT", []);
             let _ = conn.execute("ALTER TABLE highlights ADD COLUMN server_id TEXT", []);
@@ -233,6 +241,7 @@ pub fn run() {
             let _ = conn.execute("ALTER TABLE notes ADD COLUMN sync_version INTEGER DEFAULT 0", []);
             let _ = conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT", []);
             let _ = conn.execute("ALTER TABLE notes ADD COLUMN server_id TEXT", []);
+            let _ = conn.execute("ALTER TABLE notes ADD COLUMN sketch_data TEXT", []);
 
             let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN sync_version INTEGER DEFAULT 0", []);
             let _ = conn.execute("ALTER TABLE flashcards ADD COLUMN deleted_at TEXT", []);
@@ -418,12 +427,16 @@ pub fn run() {
             add_pdf,
             get_pdfs,
             delete_pdf,
+            trash_pdf,
+            restore_pdf,
+            get_trashed_pdfs,
             rename_pdf,
             update_last_opened,
             update_pdf_content_hash,
             add_highlight,
             get_highlights,
             get_highlights_by_color,
+            get_all_highlights,
             delete_highlight,
             update_highlight,
             upsert_highlight,
@@ -463,6 +476,8 @@ pub fn run() {
             delete_deck,
             upsert_flashcard,
             export_annotated_pdf,
+            save_text_file,
+            save_binary_file,
             reveal_in_folder,
             store_outline,
             get_outline,

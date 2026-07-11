@@ -17,6 +17,8 @@ import { TextBoxLayer, DEFAULT_W, DEFAULT_H } from "./TextBoxLayer";
 import { callAI } from "../services/aiService";
 import { generateFlashcardsForHighlights } from "../services/flashcardService";
 import { ensureOutline } from "../services/outlineService";
+import { pdfPointToCanvasPixel } from "../lib/coords";
+import { drawingToSketchStroke, sketchStrokeToDrawing } from "../lib/drawingConversion";
 
 // ── AI prompts ────────────────────────────────────────────────────────────────
 const EXPLAIN_SYSTEM = 'You are a helpful reading assistant. Be concise.';
@@ -484,9 +486,10 @@ function HlPickerPopup({
 
 // ── Drawing render helpers ────────────────────────────────────────────────────
 
-function pdfToCanvas(p: DrawPoint, vp: PageViewport, scale: number) {
-  return { x: p.x * scale, y: vp.height - p.y * scale };
-}
+// Shared with src/lib/drawingConversion.ts so the PDF-point-space <-> canvas-
+// pixel-space transform used for rendering and for the cross-surface
+// clipboard bridge (PdfViewer drawings <-> note sketch strokes) never drifts.
+const pdfToCanvas = pdfPointToCanvasPixel;
 
 function renderPenPath(
   ctx: CanvasRenderingContext2D,
@@ -611,7 +614,7 @@ function drawDrawingsForPage(
   scale: number,
   activeStroke?: { points: DrawPoint[]; color: string; sw: number } | null,
   shapePreview?: { tool: DrawToolType; start: DrawPoint; end: DrawPoint; color: string; sw: number } | null,
-  selectedId?: string | null,
+  selectedIds?: Set<string> | null,
 ) {
   const dpr = window.devicePixelRatio || 1;
   const ctx = canvas.getContext("2d")!;
@@ -646,10 +649,10 @@ function drawDrawingsForPage(
     if (tool === "circle")    renderCircleShape(ctx, start, end, color, sw, vp, scale);
   }
 
-  // ── Selection ring (dashed gold outline around selected drawing's bbox) ─────
-  if (selectedId) {
-    const sel = pageDrawings.find((d) => d.id === selectedId);
-    if (sel && sel.points.length > 0) {
+  // ── Selection ring(s) (dashed gold outline around each selected drawing's bbox) ─
+  if (selectedIds && selectedIds.size > 0) {
+    for (const sel of pageDrawings) {
+      if (!selectedIds.has(sel.id) || sel.points.length === 0) continue;
       const xs = sel.points.map((p) => p.x * scale);
       const ys = sel.points.map((p) => vp.height - p.y * scale);
       const PAD = 5;
@@ -715,9 +718,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     setSelectedNoteId,
     setCurrentPage: storeSetCurrentPage,
     setJumpToPage,
-    leftPanelOpen,
     rightPanelOpen,
-    setLeftPanelOpen,
     setRightPanelOpen,
     setSummary,
     setIsSummarizing,
@@ -757,6 +758,8 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     setOutlineLoading,
     setOutlineAttempted,
     setRequestOutlineExtraction,
+    drawingClipboard,
+    setDrawingClipboard,
   } = useStore();
 
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -768,10 +771,13 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   // Increments after viewportsRef is fully populated — triggers TextBoxLayer re-renders
   const [viewportVersion, setViewportVersion] = useState(0);
   const [picker, setPicker] = useState<PickerState | null>(null);
-  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+  // Multi-select: shift-click toggles membership; a plain click replaces the
+  // whole selection with just that drawing. Backs both delete and the
+  // cross-surface (PDF <-> note canvas) copy/paste clipboard.
+  const [selectedDrawingIds, setSelectedDrawingIds] = useState<Set<string>>(new Set());
   const [trashPos, setTrashPos] = useState<{ x: number; y: number } | null>(null);
-  const selectedDrawingIdRef = useRef<string | null>(null);
-  useEffect(() => { selectedDrawingIdRef.current = selectedDrawingId; }, [selectedDrawingId]);
+  const selectedDrawingIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { selectedDrawingIdsRef.current = selectedDrawingIds; }, [selectedDrawingIds]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const [flashGenResult, setFlashGenResult] = useState<{ count: number } | null>(null);
@@ -841,7 +847,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       setPicker(null);
       setHlPopup(null);
       setHlPicker(null);
-      setSelectedDrawingId(null);
+      setSelectedDrawingIds(new Set());
       setTrashPos(null);
       setFlashGenResult(null);
       // Reset draw session state on PDF switch
@@ -997,7 +1003,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
           }
 
           if (drawCanvas) {
-            drawDrawingsForPage(drawCanvas, drawingsRef.current, i, vp, scale, null, null, selectedDrawingIdRef.current);
+            drawDrawingsForPage(drawCanvas, drawingsRef.current, i, vp, scale, null, null, selectedDrawingIdsRef.current);
           }
         } catch {
           // Cancelled tasks throw a benign error; skip silently.
@@ -1027,10 +1033,10 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       const canvas = drawCanvasRefs.current[i];
       const vp = viewportsRef.current[i];
       if (canvas && vp) {
-        drawDrawingsForPage(canvas, drawings, i + 1, vp, scale, null, null, selectedDrawingId);
+        drawDrawingsForPage(canvas, drawings, i + 1, vp, scale, null, null, selectedDrawingIds);
       }
     }
-  }, [drawings, numPages, scale, selectedDrawingId]);
+  }, [drawings, numPages, scale, selectedDrawingIds]);
 
   // ── Flash animation when a highlight is selected from the panel ───────────
   useEffect(() => {
@@ -1250,7 +1256,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         setHlPopup(null);
         setHlPicker(null);
         setExplainPanel(null);
-        setSelectedDrawingId(null);
+        setSelectedDrawingIds(new Set());
         setSelectedTextBoxId(null);
         setEditingTextBoxId(null);
         setTrashPos(null);
@@ -1262,7 +1268,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!picker && !hlPopup && !hlPicker && !selectedDrawingId && !selectedTextBoxId) return;
+    if (!picker && !hlPopup && !hlPicker && selectedDrawingIds.size === 0 && !selectedTextBoxId) return;
     const onMouseDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
       if (
@@ -1276,7 +1282,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         setPicker(null);
         setHlPopup(null);
         setHlPicker(null);
-        setSelectedDrawingId(null);
+        setSelectedDrawingIds(new Set());
         setSelectedTextBoxId(null);
         setEditingTextBoxId(null);
         setTrashPos(null);
@@ -1288,7 +1294,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     };
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [picker, hlPopup, hlPicker, selectedDrawingId, selectedTextBoxId, setSelectedTextBoxId, setEditingTextBoxId, setPlacingTextBox]);
+  }, [picker, hlPopup, hlPicker, selectedDrawingIds, selectedTextBoxId, setSelectedTextBoxId, setEditingTextBoxId, setPlacingTextBox]);
 
   // ── Text selection → color picker ─────────────────────────────────────────
   const handleMouseUp = useCallback(
@@ -1428,7 +1434,17 @@ export function PdfViewer({ filePath, pdfId }: Props) {
           const pageDrawings = drawingsRef.current.filter((d) => d.page === pageNum);
           for (const d of pageDrawings) {
             if (hitTestDrawing(d, pdfX, pdfY, scale)) {
-              setSelectedDrawingId(d.id);
+              // Shift-click toggles this drawing in/out of the current
+              // selection; a plain click replaces the selection with just it.
+              setSelectedDrawingIds((prev) => {
+                if (e.shiftKey) {
+                  const next = new Set(prev);
+                  if (next.has(d.id)) next.delete(d.id);
+                  else next.add(d.id);
+                  return next;
+                }
+                return new Set([d.id]);
+              });
               // Trash button anchors to the top-right corner of the drawing bbox
               const xs = d.points.map((p) => p.x);
               const ys = d.points.map((p) => p.y);
@@ -1440,8 +1456,10 @@ export function PdfViewer({ filePath, pdfId }: Props) {
               return;
             }
           }
-          setSelectedDrawingId(null);
-          setTrashPos(null);
+          if (!e.shiftKey) {
+            setSelectedDrawingIds(new Set());
+            setTrashPos(null);
+          }
         }
       }
     },
@@ -1476,21 +1494,25 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     return () => document.removeEventListener("mousedown", handler, true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Delete a drawing (from trash button or keyboard) ──────────────────────
+  // ── Delete drawing(s) (from trash button or keyboard) ─────────────────────
   const deleteSelectedDrawing = useCallback(async (id?: string) => {
-    const target = id ?? selectedDrawingId;
-    if (!target) return;
+    const targets = id ? [id] : Array.from(selectedDrawingIds);
+    if (targets.length === 0) return;
     try {
-      await invoke("delete_drawing", { id: target });
-      removeDrawing(target);
+      await Promise.all(targets.map((t) => invoke("delete_drawing", { id: t })));
+      targets.forEach((t) => removeDrawing(t));
     } catch (err) {
       console.error("Failed to delete drawing:", err);
     }
-    setSelectedDrawingId(null);
+    setSelectedDrawingIds(new Set());
     setTrashPos(null);
-  }, [selectedDrawingId, removeDrawing]);
+  }, [selectedDrawingIds, removeDrawing]);
 
-  // ── Keyboard Delete / Backspace deletes the selected drawing or text box ──
+  // ── Keyboard: Delete/Backspace removes selection; Ctrl/Cmd+C copies the
+  // selected drawing(s) to the cross-surface clipboard (converted to
+  // SketchStroke, the canonical shape shared with note sketch canvases);
+  // Ctrl/Cmd+V converts clipboard strokes back into Drawings on the current
+  // page and persists them exactly like a hand-drawn stroke. ────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -1498,18 +1520,63 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       if (tag === "INPUT" || tag === "TEXTAREA" || isEditable) return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (selectedDrawingId) {
+        if (selectedDrawingIds.size > 0) {
           deleteSelectedDrawing();
         } else if (selectedTextBoxId) {
           invoke('delete_text_box', { id: selectedTextBoxId }).catch(console.error);
           removeTextBox(selectedTextBoxId);
           setSelectedTextBoxId(null);
         }
+        return;
+      }
+
+      const isCopy = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c";
+      const isPaste = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v";
+      if (!isCopy && !isPaste) return;
+
+      const vp = viewportsRef.current[currentPage - 1];
+      if (!vp) return;
+
+      if (isCopy && selectedDrawingIds.size > 0) {
+        const strokes = Array.from(selectedDrawingIds)
+          .map((id) => drawingsRef.current.find((d) => d.id === id))
+          .filter((d): d is Drawing => !!d && d.tool_type !== "textbox")
+          .map((d) => drawingToSketchStroke(d, vp, scaleRef.current));
+        if (strokes.length > 0) setDrawingClipboard(strokes);
+      } else if (isPaste && drawingClipboard.length > 0) {
+        const OFFSET = 16 / scaleRef.current; // nudge so pasted geometry doesn't sit exactly on the source
+        (async () => {
+          const newIds: string[] = [];
+          for (const stroke of drawingClipboard) {
+            const base = sketchStrokeToDrawing(stroke, pdfIdRef.current, currentPage, vp, scaleRef.current);
+            const offsetPoints = base.points.map((p) => ({ x: p.x + OFFSET, y: p.y - OFFSET }));
+            try {
+              const json = await invoke<string>("add_drawing", {
+                pdfId: base.pdf_id,
+                page: base.page,
+                toolType: base.tool_type,
+                color: base.color,
+                strokeWidth: base.stroke_width,
+                points: JSON.stringify(offsetPoints),
+              });
+              const raw = JSON.parse(json);
+              const drawing: Drawing = {
+                ...raw,
+                points: typeof raw.points === "string" ? JSON.parse(raw.points) : raw.points,
+              };
+              addDrawing(drawing);
+              newIds.push(drawing.id);
+            } catch (err) {
+              console.error("Failed to paste drawing:", err);
+            }
+          }
+          setSelectedDrawingIds(new Set(newIds));
+        })();
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [selectedDrawingId, deleteSelectedDrawing, selectedTextBoxId, removeTextBox, setSelectedTextBoxId]);
+  }, [selectedDrawingIds, deleteSelectedDrawing, selectedTextBoxId, removeTextBox, setSelectedTextBoxId, currentPage, drawingClipboard, setDrawingClipboard, addDrawing]);
 
   // ── Text box placement click ───────────────────────────────────────────────
   const handlePlaceTextBox = useCallback(
@@ -1877,19 +1944,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   return (
     <>
       <div className="pdf-viewer">
-        {/* ── Panel toggle buttons ── */}
-        <button
-          className="panel-toggle panel-toggle--left"
-          title={leftPanelOpen ? "Collapse library" : "Expand library"}
-          onClick={() => setLeftPanelOpen(!leftPanelOpen)}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            {leftPanelOpen
-              ? <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></>
-              : <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><polyline points="15 9 9 12 15 15"/></>
-            }
-          </svg>
-        </button>
+        {/* ── Panel toggle button (right — left toggle lives in MainArea so it's visible in every view) ── */}
         <button
           className="panel-toggle panel-toggle--right"
           title={rightPanelOpen ? "Collapse notes" : "Expand notes"}
@@ -2024,7 +2079,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
             onToggleDrawMode={() => {
               setDrawMode(!drawMode);
               if (drawMode) sessionUndoIds.current = [];
-              setSelectedDrawingId(null);
+              setSelectedDrawingIds(new Set());
               setTrashPos(null);
             }}
             onExportPdf={() => setExportDialogOpen(true)}
@@ -2084,7 +2139,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         />
       )}
 
-      {trashPos && selectedDrawingId && (
+      {trashPos && selectedDrawingIds.size > 0 && (
         <button
           className="drawing-trash-btn"
           style={{ left: trashPos.x, top: trashPos.y }}

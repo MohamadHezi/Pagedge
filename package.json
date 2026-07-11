@@ -22,6 +22,7 @@
     "@tauri-apps/plugin-store": "^2.4.3",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@uiw/react-md-editor": "^4.0.4",
+    "jspdf": "^4.2.1",
     "pdfjs-dist": "^6.1.200",
     "react": "^18",
     "react-dom": "^18",

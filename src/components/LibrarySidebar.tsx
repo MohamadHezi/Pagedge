@@ -15,12 +15,17 @@ const FOLDER_DRAG_MIME = "application/x-pagedge-folder-id";
 export function LibrarySidebar() {
   const {
     pdfs, selectedPdfId, selectPdf, leftPanelOpen,
-    ingestionStatus, isModelLoading, addPdf, deletePdf, renamePdf,
+    ingestionStatus, isModelLoading, addPdf, trashPdf, loadTrashedPdfs, renamePdf,
+    trashViewOpen, setTrashViewOpen,
     startReview, pendingImportPrompt, remoteOnlyPdfs,
     folders, createFolder, renameFolder, deleteFolder, moveFolderToParent, movePdfToFolder, setPdfPinned, setFolderPinned,
+    standaloneNotes, loadStandaloneNotes, createStandaloneNote, openStandaloneNote,
   } = useStore();
 
   const [isImporting, setIsImporting] = useState(false);
+  const [newEntryMenuOpen, setNewEntryMenuOpen] = useState(false);
+  const [notesSectionExpanded, setNotesSectionExpanded] = useState(false);
+  const [notesSectionLoaded, setNotesSectionLoaded] = useState(false);
 
   // ── Quick Views (Recent / Citations & Quotes) ───────────────────────────────
   const [activeQuickView, setActiveQuickView] = useState<QuickView | null>(null);
@@ -80,7 +85,6 @@ export function LibrarySidebar() {
   };
 
   // ── PDF row interaction state ─────────────────────────────────────────────
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [renamingId, setRenamingId]           = useState<string | null>(null);
   const [renameValue, setRenameValue]         = useState("");
   const skipBlurRef = useRef(false);
@@ -150,6 +154,11 @@ export function LibrarySidebar() {
     startReview(all);
   }, [startReview]);
 
+  const handleTrashClick = useCallback(async () => {
+    await loadTrashedPdfs();
+    setTrashViewOpen(true);
+  }, [loadTrashedPdfs, setTrashViewOpen]);
+
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX     = e.clientX;
@@ -178,19 +187,19 @@ export function LibrarySidebar() {
 
   // Dismiss confirm state on Escape
   useEffect(() => {
-    if (!confirmDeleteId && !confirmDeleteFolderId) return;
+    if (!confirmDeleteFolderId) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setConfirmDeleteId(null);
         setConfirmDeleteFolderId(null);
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [confirmDeleteId, confirmDeleteFolderId]);
+  }, [confirmDeleteFolderId]);
 
   // ── PDF handlers ─────────────────────────────────────────────────────────
   const handleNewEntry = async () => {
+    setNewEntryMenuOpen(false);
     try {
       const paths = await invoke<string[]>("open_file_dialog");
       for (const path of paths) {
@@ -204,10 +213,39 @@ export function LibrarySidebar() {
     }
   };
 
+  const handleNewStandaloneNote = async () => {
+    setNewEntryMenuOpen(false);
+    try {
+      await createStandaloneNote();
+    } catch (err) {
+      console.error("Failed to create standalone note:", err);
+    }
+  };
+
+  // Dismiss the "+ New Entry" popover on outside click.
+  useEffect(() => {
+    if (!newEntryMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest(".nav-new-entry-wrap")) {
+        setNewEntryMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [newEntryMenuOpen]);
+
+  const handleToggleNotesSection = () => {
+    const next = !notesSectionExpanded;
+    setNotesSectionExpanded(next);
+    if (next && !notesSectionLoaded) {
+      setNotesSectionLoaded(true);
+      loadStandaloneNotes();
+    }
+  };
+
   const startRename = (e: React.MouseEvent, id: string, currentName: string) => {
     e.stopPropagation();
     skipBlurRef.current = false;
-    setConfirmDeleteId(null);
     setRenamingId(id);
     setRenameValue(currentName);
   };
@@ -222,11 +260,6 @@ export function LibrarySidebar() {
     if (trimmed && trimmed !== pdfs.find((p) => p.id === id)?.filename) {
       await renamePdf(id, trimmed);
     }
-  };
-
-  const handleDelete = async (id: string) => {
-    setConfirmDeleteId(null);
-    await deletePdf(id);
   };
 
   // ── Collection (folder) handlers ──────────────────────────────────────────
@@ -315,7 +348,6 @@ export function LibrarySidebar() {
   // ── Row renderers ─────────────────────────────────────────────────────────
   const renderPdfRow = (pdf: Pdf, depth: number) => {
     const status        = ingestionStatus[pdf.id];
-    const isConfirming   = confirmDeleteId === pdf.id;
     const isRenaming     = renamingId === pdf.id;
     const isSelected     = selectedPdfId === pdf.id;
 
@@ -325,16 +357,15 @@ export function LibrarySidebar() {
         className={[
           "pdf-item",
           isSelected && !isRenaming ? "pdf-item--selected" : "",
-          isConfirming ? "pdf-item--confirming" : "",
           draggingPdfId === pdf.id ? "pdf-item--dragging" : "",
         ].filter(Boolean).join(" ")}
         style={depth > 0 ? { paddingLeft: `${28 + depth * 14}px` } : undefined}
         onClick={() => {
-          if (isConfirming || isRenaming) return;
+          if (isRenaming) return;
           selectPdf(pdf.id);
         }}
-        title={isRenaming || isConfirming ? undefined : pdf.filepath}
-        draggable={!isRenaming && !isConfirming}
+        title={isRenaming ? undefined : pdf.filepath}
+        draggable={!isRenaming}
         onDragStart={(e) => {
           e.stopPropagation();
           e.dataTransfer.setData(PDF_DRAG_MIME, pdf.id);
@@ -381,7 +412,7 @@ export function LibrarySidebar() {
         )}
 
         {/* Pin toggle — always visible when pinned, hover-revealed otherwise */}
-        {!isRenaming && !isConfirming && (
+        {!isRenaming && (
           <button
             className={`pdf-pin-btn${pdf.is_pinned ? " pdf-pin-btn--active" : ""}`}
             title={pdf.is_pinned ? "Unpin" : "Pin"}
@@ -393,63 +424,45 @@ export function LibrarySidebar() {
           </button>
         )}
 
-        {/* Right slot — confirm actions OR status+delete toggle */}
+        {/* Grid-stacked slot: status at rest, trash on hover */}
         {!isRenaming && (
-          isConfirming ? (
-            <span className="pdf-confirm-actions">
-              <button
-                className="pdf-confirm-cancel"
-                onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
-              >
-                Cancel
-              </button>
-              <button
-                className="pdf-confirm-delete"
-                onClick={(e) => { e.stopPropagation(); handleDelete(pdf.id); }}
-              >
-                Delete
-              </button>
-            </span>
-          ) : (
-            /* Grid-stacked slot: status at rest, trash on hover */
-            <span className="pdf-item-right">
-              <span className="pdf-status">
-                {status === "indexing" && (
-                  <span className="pdf-status-spinner" title="Indexing…" />
-                )}
-                {status === "done" && (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="pdf-status-done" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                )}
-                {(status === "error" || (!status && pdf.chunk_count === 0)) && (
-                  <button
-                    className="pdf-status-error"
-                    title={status === "error" ? "Indexing failed — click to retry" : "No text extracted — click to re-index"}
-                    onClick={(e) => { e.stopPropagation(); ingestPdf(pdf.id, pdf.filepath).catch(console.error); }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="10" />
-                      <line x1="12" y1="8" x2="12" y2="12" />
-                      <line x1="12" y1="16" x2="12.01" y2="16" />
-                    </svg>
-                  </button>
-                )}
-              </span>
-
-              {/* Trash — fades in on row hover via CSS */}
-              <button
-                className="pdf-delete-btn"
-                title="Remove from library"
-                onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(pdf.id); }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+          <span className="pdf-item-right">
+            <span className="pdf-status">
+              {status === "indexing" && (
+                <span className="pdf-status-spinner" title="Indexing…" />
+              )}
+              {status === "done" && (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="pdf-status-done" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
                 </svg>
-              </button>
+              )}
+              {(status === "error" || (!status && pdf.chunk_count === 0)) && (
+                <button
+                  className="pdf-status-error"
+                  title={status === "error" ? "Indexing failed — click to retry" : "No text extracted — click to re-index"}
+                  onClick={(e) => { e.stopPropagation(); ingestPdf(pdf.id, pdf.filepath).catch(console.error); }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                </button>
+              )}
             </span>
-          )
+
+            {/* Trash — fades in on row hover via CSS; soft-deletes instantly */}
+            <button
+              className="pdf-delete-btn"
+              title="Move to Trash"
+              onClick={(e) => { e.stopPropagation(); trashPdf(pdf.id); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+              </svg>
+            </button>
+          </span>
         )}
       </li>
     );
@@ -649,6 +662,47 @@ export function LibrarySidebar() {
         {/* Section 0 — OUTLINE (only when a PDF is open) */}
         <OutlineSection />
 
+        {/* Section 0b — NOTES (standalone notes, not tied to any PDF) */}
+        <div className="nav-section">
+          <button
+            className="nav-section-header nav-section-header--toggle"
+            onClick={handleToggleNotesSection}
+            aria-expanded={notesSectionExpanded}
+          >
+            <span className={`outline-section-chevron${notesSectionExpanded ? " outline-section-chevron--expanded" : ""}`}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </span>
+            <span className="nav-section-title">Notes</span>
+          </button>
+          <div className={`outline-collapse${notesSectionExpanded ? " outline-collapse--expanded" : ""}`}>
+            <div className="outline-collapse-inner">
+              {standaloneNotes.length === 0 ? (
+                <p className="sidebar-empty">No standalone notes yet</p>
+              ) : (
+                <ul className="pdf-list">
+                  {standaloneNotes.map((note) => (
+                    <li key={note.id}>
+                      <button
+                        className="nav-tree-item"
+                        title={note.title || "Untitled"}
+                        onClick={() => openStandaloneNote(note.id)}
+                      >
+                        <svg className="pdf-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M4 4h16v16H4z" />
+                          <path d="M8 9h8M8 13h5" />
+                        </svg>
+                        <span className="nav-tree-item-label">{note.title || "Untitled"}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Section 1 — LIBRARY (nested collections + documents, or a flat
             quick-view list when Recent/Citations & Quotes is active) */}
         <div className="nav-section">
@@ -800,28 +854,49 @@ export function LibrarySidebar() {
             </svg>
             <span className="nav-tree-item-label">Citations &amp; Quotes</span>
           </button>
+
+          <button
+            className={`nav-tree-item${trashViewOpen ? " nav-tree-item--active" : ""}`}
+            title="Trashed documents"
+            onClick={handleTrashClick}
+          >
+            <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+            </svg>
+            <span className="nav-tree-item-label">Trash</span>
+          </button>
         </div>
 
       </div>{/* end nav-scroll */}
 
       {/* ── Section 4: Bottom-docked actions ── */}
       <div className="nav-bottom-dock">
-        <button className="nav-new-entry-btn" title="Import a new PDF" onClick={handleNewEntry}>
-          <span className="nav-new-entry-icon">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </span>
-          New Entry
-        </button>
-        <button className="nav-archive-row" title="Archive &amp; Trash">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-          </svg>
-          Archive &amp; Trash
-        </button>
+        <div className="nav-new-entry-wrap">
+          <button
+            className="nav-new-entry-btn"
+            title="Add a new entry"
+            onClick={() => setNewEntryMenuOpen((o) => !o)}
+          >
+            <span className="nav-new-entry-icon">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </span>
+            New Entry
+          </button>
+          {newEntryMenuOpen && (
+            <div className="nav-new-entry-menu">
+              <button className="nav-new-entry-menu-item" onClick={handleNewEntry}>
+                Import PDF…
+              </button>
+              <button className="nav-new-entry-menu-item" onClick={handleNewStandaloneNote}>
+                New Standalone Note
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
     </aside>

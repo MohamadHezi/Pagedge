@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, Drawing, DrawToolType, TextBox, Flashcard, Deck, ReviewFilter, OutlineItem } from "../types";
+import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, GlobalChatMessage, Drawing, DrawToolType, TextBox, Flashcard, Deck, ReviewFilter, OutlineItem, SketchStroke } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
 import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending, clearPullCursor } from "../services/syncService";
@@ -79,11 +79,17 @@ interface AppState {
   selectedPdfId: string | null;
   folders: Folder[];
   addPdf: (filepath: string) => Promise<Pdf>;
-  deletePdf: (id: string) => Promise<void>;
+  permanentlyDeletePdf: (id: string) => Promise<void>;
   renamePdf: (id: string, filename: string) => Promise<void>;
   selectPdf: (id: string | null) => void;
   loadPdfs: () => Promise<void>;
   updatePdfChunkCount: (pdfId: string, chunkCount: number) => void;
+
+  // ── Trash (soft-delete) ──────────────────────────────────────────────────────
+  trashedPdfs: Pdf[];
+  loadTrashedPdfs: () => Promise<void>;
+  trashPdf: (id: string) => Promise<void>;
+  restorePdf: (id: string) => Promise<void>;
 
   // ── Collections (folders) + Pinned ───────────────────────────────────────────
   loadFolders: () => Promise<void>;
@@ -153,12 +159,29 @@ interface AppState {
   setAiSettings: (s: Partial<{ aiProvider: string; aiModel: string; aiBaseUrl: string; aiApiKey: string; aiUseCustomProvider: boolean }>) => void;
   loadAiSettings: () => Promise<void>;
 
+  // ── UI / editor preferences ───────────────────────────────────────────────────
+  editorFontSize: number;
+  editorLineWrap: boolean;
+  setUiPrefs: (p: Partial<{ editorFontSize: number; editorLineWrap: boolean }>) => void;
+  loadUiPrefs: () => Promise<void>;
+
   // ── Chat ──────────────────────────────────────────────────────────────────────
   chatMessages: ChatMessage[];
   addChatMessage: (msg: ChatMessage) => void;
   clearChat: () => void;
   isAiLoading: boolean;
   setAiLoading: (loading: boolean) => void;
+
+  // ── Global Chat (cross-library) ─────────────────────────────────────────────
+  // Separate from chatMessages above (per-PDF, RightPanel's "Chat with PDF"
+  // tab). Joins the graphViewOpen/deckManagerOpen mutual-exclusion set.
+  globalChatOpen: boolean;
+  setGlobalChatOpen: (open: boolean) => void;
+  globalChatMessages: GlobalChatMessage[];
+  addGlobalChatMessage: (msg: GlobalChatMessage) => void;
+  clearGlobalChat: () => void;
+  isGlobalChatLoading: boolean;
+  setGlobalChatLoading: (loading: boolean) => void;
 
   // ── Settings panel ────────────────────────────────────────────────────────────
   settingsPanelOpen: boolean;
@@ -256,6 +279,13 @@ interface AppState {
   // (same pattern as graphViewOpen). selectPdf always resets it.
   deckManagerOpen: boolean;
   setDeckManagerOpen: (open: boolean) => void;
+
+  // ── Trash view ────────────────────────────────────────────────────────────
+  // Replaces the center panel with the Trash dashboard when true. Joins the
+  // graphViewOpen/deckManagerOpen/globalChatOpen mutual-exclusion set.
+  // selectPdf always resets it.
+  trashViewOpen: boolean;
+  setTrashViewOpen: (open: boolean) => void;
   decks: Deck[];
   loadDecks: () => Promise<void>;
   createDeck: (name: string) => Promise<Deck>;
@@ -266,6 +296,30 @@ interface AppState {
   // by addFlashcard/removeFlashcard/updateFlashcardLocal after loading.
   allCards: Flashcard[];
   loadAllCards: () => Promise<void>;
+
+  // ── Note Workspace (standalone notes) ────────────────────────────────────
+  // Replaces the center panel with the full-page standalone-note workspace
+  // when true. Joins the graphViewOpen/deckManagerOpen/globalChatOpen/
+  // trashViewOpen mutual-exclusion set. selectPdf always resets it.
+  noteWorkspaceOpen: boolean;
+  setNoteWorkspaceOpen: (open: boolean) => void;
+  openStandaloneNote: (noteId: string) => void;
+  // Whole-library standalone-note list (source_pdf_id === null), analogous
+  // to allCards for flashcards — the per-PDF `notes` array only ever holds
+  // the open PDF's notes.
+  standaloneNotes: Note[];
+  loadStandaloneNotes: () => Promise<void>;
+  createStandaloneNote: () => Promise<Note>;
+  updateStandaloneNoteLocal: (id: string, changes: Partial<Note>) => void;
+  removeStandaloneNoteLocal: (id: string) => void;
+
+  // ── Cross-surface drawing clipboard ──────────────────────────────────────
+  // Canonical intermediate format for copy/paste between the PDF-page
+  // drawing layer (PdfViewer, PDF-point-space) and a note's sketch canvas
+  // (canvas-pixel-space) is always SketchStroke — PdfViewer converts to/from
+  // Drawing at its own copy/paste boundary.
+  drawingClipboard: SketchStroke[];
+  setDrawingClipboard: (strokes: SketchStroke[]) => void;
 
   // ── Tags ──────────────────────────────────────────────────────────────────────
   suggestedTags: string[];
@@ -297,7 +351,7 @@ interface AppState {
   setRequestOutlineExtraction: (fn: (() => void) | null) => void;
 }
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
   // ── Auth ──────────────────────────────────────────────────────────────────────
   user: null,
   isAuthenticated: false,
@@ -398,6 +452,7 @@ export const useStore = create<AppState>((set) => ({
   pdfs: [],
   selectedPdfId: null,
   folders: [],
+  trashedPdfs: [],
 
   addPdf: async (filepath: string): Promise<Pdf> => {
     const json = await invoke<string>("add_pdf", { filepath });
@@ -424,14 +479,34 @@ export const useStore = create<AppState>((set) => ({
     return pdf;
   },
 
-  deletePdf: async (id: string) => {
+  permanentlyDeletePdf: async (id: string) => {
     const pdf = useStore.getState().pdfs.find((p) => p.id === id);
     await invoke('delete_pdf', { id });
     clearPullCursor(pdf?.content_hash);
     set((state) => ({
       pdfs: state.pdfs.filter((p) => p.id !== id),
+      trashedPdfs: state.trashedPdfs.filter((p) => p.id !== id),
       selectedPdfId: state.selectedPdfId === id ? null : state.selectedPdfId,
     }));
+  },
+
+  loadTrashedPdfs: async () => {
+    const json = await invoke<string>("get_trashed_pdfs");
+    set({ trashedPdfs: JSON.parse(json) });
+  },
+
+  trashPdf: async (id: string) => {
+    await invoke('trash_pdf', { id });
+    set((state) => ({
+      pdfs: state.pdfs.filter((p) => p.id !== id),
+      selectedPdfId: state.selectedPdfId === id ? null : state.selectedPdfId,
+    }));
+  },
+
+  restorePdf: async (id: string) => {
+    await invoke('restore_pdf', { id });
+    set((state) => ({ trashedPdfs: state.trashedPdfs.filter((p) => p.id !== id) }));
+    await useStore.getState().loadPdfs();
   },
 
   renamePdf: async (id: string, filename: string) => {
@@ -536,7 +611,7 @@ export const useStore = create<AppState>((set) => ({
   },
 
   selectPdf: (id) => {
-    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false });
+    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false });
     if (id) {
       const pdf = useStore.getState().pdfs.find((p) => p.id === id);
       if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
@@ -682,12 +757,43 @@ export const useStore = create<AppState>((set) => ({
     }
   },
 
+  // ── UI / editor preferences ───────────────────────────────────────────────────
+  editorFontSize: 13,
+  editorLineWrap: true,
+
+  setUiPrefs: (p) => set((state) => ({ ...state, ...p })),
+
+  loadUiPrefs: async () => {
+    try {
+      const [fontSize, lineWrap] = await Promise.all([
+        invoke<string>('get_setting', { key: 'editor_font_size' }),
+        invoke<string>('get_setting', { key: 'editor_line_wrap' }),
+      ]);
+      const parsedFontSize = fontSize ? Number(fontSize) : 13;
+      const nextFontSize = Number.isFinite(parsedFontSize) ? parsedFontSize : 13;
+      const nextWrap = lineWrap === '' || lineWrap == null ? true : lineWrap === 'true';
+      set({ editorFontSize: nextFontSize, editorLineWrap: nextWrap });
+      document.documentElement.style.setProperty('--note-font-size', `${nextFontSize}px`);
+    } catch (err) {
+      console.error('Failed to load UI preferences:', err);
+    }
+  },
+
   // ── Chat ──────────────────────────────────────────────────────────────────────
   chatMessages: [],
   addChatMessage: (msg) => set((state) => ({ chatMessages: [...state.chatMessages, msg] })),
   clearChat: () => set({ chatMessages: [] }),
   isAiLoading: false,
   setAiLoading: (loading) => set({ isAiLoading: loading }),
+
+  globalChatOpen: false,
+  setGlobalChatOpen: (open) =>
+    set(open ? { globalChatOpen: true, graphViewOpen: false, deckManagerOpen: false, trashViewOpen: false, noteWorkspaceOpen: false } : { globalChatOpen: false }),
+  globalChatMessages: [],
+  addGlobalChatMessage: (msg) => set((state) => ({ globalChatMessages: [...state.globalChatMessages, msg] })),
+  clearGlobalChat: () => set({ globalChatMessages: [] }),
+  isGlobalChatLoading: false,
+  setGlobalChatLoading: (loading) => set({ isGlobalChatLoading: loading }),
 
   // ── Settings panel ────────────────────────────────────────────────────────────
   settingsPanelOpen: false,
@@ -703,7 +809,7 @@ export const useStore = create<AppState>((set) => ({
 
   // ── Graph view (knowledge map) ───────────────────────────────────────────────
   graphViewOpen: false,
-  setGraphViewOpen: (open) => set(open ? { graphViewOpen: true, deckManagerOpen: false } : { graphViewOpen: false }),
+  setGraphViewOpen: (open) => set(open ? { graphViewOpen: true, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false } : { graphViewOpen: false }),
 
   // ── Export ────────────────────────────────────────────────────────────────────
   exportDialogOpen: false,
@@ -851,7 +957,11 @@ export const useStore = create<AppState>((set) => ({
 
   // ── Deck Manager ──────────────────────────────────────────────────────────
   deckManagerOpen: false,
-  setDeckManagerOpen: (open) => set(open ? { deckManagerOpen: true, graphViewOpen: false } : { deckManagerOpen: false }),
+  setDeckManagerOpen: (open) => set(open ? { deckManagerOpen: true, graphViewOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false } : { deckManagerOpen: false }),
+
+  trashViewOpen: false,
+  setTrashViewOpen: (open) =>
+    set(open ? { trashViewOpen: true, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, noteWorkspaceOpen: false } : { trashViewOpen: false }),
 
   decks: [],
   loadDecks: async () => {
@@ -884,6 +994,41 @@ export const useStore = create<AppState>((set) => ({
     const json = await invoke<string>('get_all_flashcards');
     set({ allCards: JSON.parse(json) });
   },
+
+  // ── Note Workspace (standalone notes) ────────────────────────────────────
+  noteWorkspaceOpen: false,
+  setNoteWorkspaceOpen: (open) =>
+    set(open ? { noteWorkspaceOpen: true, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false } : { noteWorkspaceOpen: false }),
+
+  openStandaloneNote: (noteId) =>
+    set({ selectedNoteId: noteId, noteWorkspaceOpen: true, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false }),
+
+  standaloneNotes: [],
+  loadStandaloneNotes: async () => {
+    const json = await invoke<string>('get_notes', {});
+    const all: Note[] = JSON.parse(json);
+    set({ standaloneNotes: all.filter((n) => n.source_pdf_id == null) });
+  },
+
+  createStandaloneNote: async () => {
+    const json = await invoke<string>('create_note', { title: 'Untitled', sourcePdfId: null, sourcePage: null });
+    const note: Note = JSON.parse(json);
+    set((state) => ({ standaloneNotes: [note, ...state.standaloneNotes] }));
+    get().openStandaloneNote(note.id);
+    return note;
+  },
+
+  updateStandaloneNoteLocal: (id, changes) =>
+    set((state) => ({
+      standaloneNotes: state.standaloneNotes.map((n) => (n.id === id ? { ...n, ...changes } : n)),
+    })),
+
+  removeStandaloneNoteLocal: (id) =>
+    set((state) => ({ standaloneNotes: state.standaloneNotes.filter((n) => n.id !== id) })),
+
+  // ── Cross-surface drawing clipboard ──────────────────────────────────────
+  drawingClipboard: [],
+  setDrawingClipboard: (strokes) => set({ drawingClipboard: strokes }),
 
   // ── Tags ──────────────────────────────────────────────────────────────────────
   suggestedTags: [],

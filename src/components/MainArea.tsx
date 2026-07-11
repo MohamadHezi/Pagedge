@@ -4,10 +4,16 @@ import { useStore } from "../store";
 import { PdfViewer } from "./PdfViewer";
 import { GraphView } from "./GraphView";
 import { DeckManager } from "./DeckManager";
+import { GlobalChatView } from "./GlobalChatView";
+import { TrashView } from "./TrashView";
+import { NoteWorkspace } from "./NoteWorkspace";
 import { ingestPdf } from "../services/ingestionService";
 
 export function MainArea() {
-  const { addPdf, selectedPdfId, pdfs, selectPdf, graphViewOpen, deckManagerOpen } = useStore();
+  const {
+    addPdf, selectedPdfId, pdfs, selectPdf, graphViewOpen, deckManagerOpen, globalChatOpen, trashViewOpen,
+    noteWorkspaceOpen, leftPanelOpen, setLeftPanelOpen,
+  } = useStore();
   const selectedPdf = pdfs.find((p) => p.id === selectedPdfId) ?? null;
   const [isDragging, setIsDragging] = useState(false);
 
@@ -65,8 +71,28 @@ export function MainArea() {
 
   return (
     <main className="main-area" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
-      {deckManagerOpen ? (
+      {/* ── Library sidebar toggle — always visible regardless of which view is active ── */}
+      <button
+        className="panel-toggle panel-toggle--left"
+        title={leftPanelOpen ? "Collapse library" : "Expand library"}
+        onClick={() => setLeftPanelOpen(!leftPanelOpen)}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          {leftPanelOpen
+            ? <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></>
+            : <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><polyline points="15 9 9 12 15 15"/></>
+          }
+        </svg>
+      </button>
+
+      {globalChatOpen ? (
+        <GlobalChatView />
+      ) : deckManagerOpen ? (
         <DeckManager />
+      ) : trashViewOpen ? (
+        <TrashView />
+      ) : noteWorkspaceOpen ? (
+        <NoteWorkspace />
       ) : graphViewOpen ? (
         <GraphView />
       ) : selectedPdf ? (

@@ -27,7 +27,7 @@ const PROCESSED_AUTH_TOKEN_KEY = 'pagedge_last_processed_auth_token';
 
 function App() {
   const {
-    loadPdfs, loadAiSettings, selectedPdfId, setSearchModalOpen,
+    loadPdfs, loadAiSettings, loadUiPrefs, selectedPdfId, setSearchModalOpen,
     initAuth, authLoading, user,
     refreshUserFromMe, closePaywall, completeEmailVerification,
     emailVerifyToastOpen, dismissEmailVerifyToast,
@@ -47,10 +47,11 @@ function App() {
     loadPdfs().catch(console.error);
     loadFolders().catch(console.error);
     loadAiSettings().catch(console.error);
+    loadUiPrefs().catch(console.error);
     initAuth();
     checkForUpdates();
     refreshRemoteOnlyPdfs().catch(console.error);
-  }, [loadPdfs, loadFolders, loadAiSettings, initAuth]);
+  }, [loadPdfs, loadFolders, loadAiSettings, loadUiPrefs, initAuth]);
 
   // pagedge://stripe-success / pagedge://stripe-cancel — fired when Stripe
   // Checkout / the billing portal redirects back to the desktop app.

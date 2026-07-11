@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import MDEditor from "@uiw/react-md-editor";
 import "@uiw/react-md-editor/markdown-editor.css";
 import { invoke } from "@tauri-apps/api/core";
@@ -6,6 +6,7 @@ import { useStore } from "../store";
 import type { Note, ChatMessage, Highlight } from "../types";
 import { HIGHLIGHT_COLORS, HIGHLIGHT_COLOR_KEYS, type HighlightColorKey } from "../constants/highlights";
 import { callAI } from "../services/aiService";
+import { isStandaloneNote } from "../lib/notes";
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 const CHAT_SYSTEM =
@@ -85,6 +86,58 @@ async function buildContext(
   return { context, chunkCount: chunks.length };
 }
 
+// Mirrors the textarea's text-affecting CSS onto an off-screen div so a span
+// wrapped around the caret position reports pixel coordinates via offsetTop/
+// offsetLeft. Standard technique for caret-position lookup in a plain
+// <textarea> (no native API for this exists).
+const CARET_MIRROR_PROPS = [
+  "boxSizing", "width", "height", "overflowX", "overflowY",
+  "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "borderStyle",
+  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+  "fontStyle", "fontVariant", "fontWeight", "fontStretch", "fontSize", "fontFamily",
+  "lineHeight", "textAlign", "textTransform", "textIndent", "textDecoration",
+  "letterSpacing", "wordSpacing", "tabSize", "whiteSpace", "wordWrap",
+] as const;
+
+function getCaretCoordinates(
+  textarea: HTMLTextAreaElement,
+  position: number
+): { top: number; left: number; height: number } {
+  const style = window.getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.top = "0";
+  mirror.style.left = "-9999px";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordWrap = "break-word";
+  for (const prop of CARET_MIRROR_PROPS) {
+    (mirror.style as unknown as Record<string, string>)[prop] = style[prop as unknown as number];
+  }
+  document.body.appendChild(mirror);
+
+  mirror.textContent = textarea.value.slice(0, position);
+  const span = document.createElement("span");
+  span.textContent = textarea.value.slice(position) || ".";
+  mirror.appendChild(span);
+
+  const rect = textarea.getBoundingClientRect();
+  const lineHeight = parseFloat(style.lineHeight) || 18;
+  const coords = {
+    top: rect.top + span.offsetTop - textarea.scrollTop,
+    left: rect.left + span.offsetLeft - textarea.scrollLeft,
+    height: lineHeight,
+  };
+  document.body.removeChild(mirror);
+  return coords;
+}
+
+interface WikiCandidate {
+  key: string;
+  title: string;
+  type: "note" | "pdf";
+}
+
 function extractPageRefs(text: string): number[] {
   const nums = new Set<number>();
   const re = /\b(?:page|p\.?)\s*(\d+)\b/gi;
@@ -125,7 +178,14 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
 
 // ── NoteEditor ────────────────────────────────────────────────────────────────
 
-function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
+export function NoteEditor({
+  note, onBack, fullPage = false, extraHeaderActions,
+}: {
+  note: Note;
+  onBack: () => void;
+  fullPage?: boolean;
+  extraHeaderActions?: React.ReactNode;
+}) {
   const {
     isAuthenticated,
     requireAuth,
@@ -133,12 +193,16 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     jumpToPage,
     updateNote: storeUpdateNote,
     removeNote,
+    updateStandaloneNoteLocal,
+    removeStandaloneNoteLocal,
     setSelectedNoteId,
+    setNoteWorkspaceOpen,
     suggestedTags,
     setSuggestedTags,
     clearSuggestedTags,
     isSuggestingTags,
     setIsSuggestingTags,
+    editorLineWrap,
   } = useStore();
 
   const [localTitle, setLocalTitle] = useState(note.title);
@@ -158,6 +222,10 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     setTagInput("");
     pendingRef.current = {};
     clearSuggestedTags();
+    setWikiQuery(null);
+    setWikiTriggerPos(null);
+    setWikiCoords(null);
+    setWikiActiveIndex(0);
   }, [note.id]);
 
   const flush = useCallback(
@@ -169,17 +237,19 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
           contentMarkdown: pending.content,
         });
         const updated = JSON.parse(json) as Note;
-        storeUpdateNote(noteId, {
+        const patch = {
           title: updated.title,
           content_markdown: updated.content_markdown,
           updated_at: updated.updated_at,
-        });
+        };
+        if (isStandaloneNote(note)) updateStandaloneNoteLocal(noteId, patch);
+        else storeUpdateNote(noteId, patch);
         setSaveState("saved");
       } catch {
         setSaveState("idle");
       }
     },
-    [storeUpdateNote]
+    [note, storeUpdateNote, updateStandaloneNoteLocal]
   );
 
   const scheduleFlush = useCallback(
@@ -196,18 +266,203 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     [note.id, flush]
   );
 
+  // ── Wiki-link ([[...]]) autocomplete ──────────────────────────────────────
+  const editorWrapRef = useRef<HTMLDivElement>(null);
+  const [wikiQuery, setWikiQuery] = useState<string | null>(null); // null = popover closed
+  const [wikiTriggerPos, setWikiTriggerPos] = useState<number | null>(null);
+  const [wikiCoords, setWikiCoords] = useState<{ top: number; left: number; height: number } | null>(null);
+  // -1 = nothing highlighted yet. Enter/Tab only complete a suggestion once
+  // the user has explicitly navigated to it (arrow keys or hover) — until
+  // then those keys behave as normal textarea keys, so typing a brand-new
+  // title never gets silently swapped for the closest existing match.
+  const [wikiActiveIndex, setWikiActiveIndex] = useState(-1);
+  const [allNoteTitles, setAllNoteTitles] = useState<{ id: string; title: string }[] | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
+
+  const wikiCandidatePool = useMemo<WikiCandidate[]>(() => {
+    const pool: WikiCandidate[] = [];
+    (allNoteTitles ?? [])
+      .filter((n) => n.id !== note.id)
+      .forEach((n) => pool.push({ key: `note:${n.id}`, title: n.title, type: "note" }));
+    pdfs.forEach((p) =>
+      pool.push({ key: `pdf:${p.id}`, title: p.filename.replace(/\.pdf$/i, ""), type: "pdf" })
+    );
+    return pool;
+  }, [allNoteTitles, pdfs, note.id]);
+
+  const wikiCandidates = useMemo<WikiCandidate[]>(() => {
+    if (wikiQuery === null) return [];
+    const q = wikiQuery.trim().toLowerCase();
+    const list = q ? wikiCandidatePool.filter((c) => c.title.toLowerCase().includes(q)) : wikiCandidatePool;
+    return list.slice(0, 8);
+  }, [wikiQuery, wikiCandidatePool]);
+
+  // Mirrored into a ref so the native keydown listener (attached once) always
+  // reads the latest popover state instead of a stale closure.
+  const wikiStateRef = useRef({ open: false, index: -1, candidates: [] as WikiCandidate[] });
+  useEffect(() => {
+    wikiStateRef.current = { open: wikiQuery !== null, index: wikiActiveIndex, candidates: wikiCandidates };
+  });
+
+  const ensureNoteTitles = useCallback(async () => {
+    if (allNoteTitles !== null) return;
+    try {
+      const json = await invoke<string>("get_notes", {});
+      const all: Note[] = JSON.parse(json);
+      setAllNoteTitles(all.map((n) => ({ id: n.id, title: n.title.trim() || "Untitled" })));
+    } catch (err) {
+      console.error("get_notes (wiki-link autocomplete) failed:", err);
+      setAllNoteTitles([]);
+    }
+  }, [allNoteTitles]);
+
+  const closeWikiPopover = useCallback(() => {
+    setWikiQuery(null);
+    setWikiTriggerPos(null);
+    setWikiCoords(null);
+    setWikiActiveIndex(-1);
+  }, []);
+
+  const detectWikiTrigger = useCallback(
+    (textarea: HTMLTextAreaElement, isDeletion = false) => {
+      const pos = textarea.selectionStart ?? 0;
+      const value = textarea.value;
+      const upToCursor = value.slice(0, pos);
+      const lastOpen = upToCursor.lastIndexOf("[[");
+      if (lastOpen === -1) return closeWikiPopover();
+
+      // Look ahead on the same line (past the cursor) for this pair's closing
+      // `]]`. If one already exists, `[[...]]` is a complete, already-inserted
+      // link and the cursor is just editing inside it (e.g. backspacing
+      // through "Title") — never reopen the popover in that case, regardless
+      // of where inside the brackets the cursor sits.
+      const lineEnd = value.indexOf("\n", lastOpen);
+      const scanEnd = lineEnd === -1 ? value.length : lineEnd;
+      const restOfPair = value.slice(lastOpen + 2, scanEnd);
+      if (restOfPair.includes("]]")) return closeWikiPopover();
+
+      const between = upToCursor.slice(lastOpen + 2);
+      // A stray `[` or newline before the cursor means this isn't a fresh,
+      // still-open query either.
+      if (between.includes("[") || between.includes("\n")) return closeWikiPopover();
+
+      // Backspacing through an already-completed [[Title]] destroys its
+      // closing brackets one character at a time, which briefly makes the
+      // remaining text look exactly like a fresh, still-open trigger. Once
+      // the popover is closed, only actual typing (insertion) is allowed to
+      // reopen it — deletion alone never does, so deleting a finished link
+      // is uninterrupted all the way through.
+      if (!wikiStateRef.current.open && isDeletion) return;
+
+      setWikiTriggerPos(lastOpen);
+      setWikiQuery(between);
+      setWikiActiveIndex(-1);
+      setWikiCoords(getCaretCoordinates(textarea, pos));
+      ensureNoteTitles();
+    },
+    [closeWikiPopover, ensureNoteTitles]
+  );
+
+  const insertWikiCandidate = useCallback(
+    (candidate: WikiCandidate) => {
+      const textarea = editorWrapRef.current?.querySelector("textarea");
+      if (!textarea || wikiTriggerPos === null) return closeWikiPopover();
+      const cursorPos = textarea.selectionStart ?? wikiTriggerPos;
+      const value = textarea.value;
+      const inserted = `[[${candidate.title}]]`;
+      const newContent = value.slice(0, wikiTriggerPos) + inserted + value.slice(cursorPos);
+      const newCaret = wikiTriggerPos + inserted.length;
+
+      setLocalContent(newContent);
+      scheduleFlush({ content: newContent });
+      pendingCaretRef.current = newCaret;
+      closeWikiPopover();
+    },
+    [wikiTriggerPos, closeWikiPopover, scheduleFlush]
+  );
+
+  // Restore caret position after a programmatic content update (candidate
+  // insertion) — MDEditor is a controlled component, so writing new state
+  // doesn't preserve cursor placement on its own.
+  useEffect(() => {
+    if (pendingCaretRef.current === null) return;
+    const pos = pendingCaretRef.current;
+    pendingCaretRef.current = null;
+    const textarea = editorWrapRef.current?.querySelector("textarea");
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(pos, pos);
+    }
+  }, [localContent]);
+
+  // Native listeners on the underlying textarea (not React textareaProps
+  // handlers) so trigger detection always reads the live DOM value/caret,
+  // independent of MDEditor's own onChange render timing.
+  useEffect(() => {
+    const textarea = editorWrapRef.current?.querySelector("textarea");
+    if (!textarea) return;
+
+    const onInput = (e: Event) => {
+      const inputType = (e as InputEvent).inputType ?? "";
+      detectWikiTrigger(textarea, inputType.startsWith("delete"));
+    };
+    const onClick = () => detectWikiTrigger(textarea);
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) detectWikiTrigger(textarea);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      const st = wikiStateRef.current;
+      if (!st.open) return;
+      if (e.key === "ArrowDown") {
+        if (st.candidates.length === 0) return;
+        e.preventDefault();
+        // From "no highlight" (-1), the first press lands on index 0.
+        setWikiActiveIndex((i) => Math.min(st.candidates.length - 1, i + 1));
+      } else if (e.key === "ArrowUp") {
+        if (st.candidates.length === 0) return;
+        e.preventDefault();
+        // From "no highlight" (-1), the first press lands on the last item.
+        setWikiActiveIndex((i) => (i < 0 ? st.candidates.length - 1 : Math.max(0, i - 1)));
+      } else if (e.key === "Enter" || e.key === "Tab") {
+        // Only intercept the key when something has been explicitly
+        // highlighted (arrow keys or hover) — otherwise let Enter/Tab fall
+        // through to their normal textarea behavior so typing a fresh title
+        // never gets silently swapped for the closest existing match.
+        if (st.index < 0 || st.index >= st.candidates.length) return;
+        e.preventDefault();
+        insertWikiCandidate(st.candidates[st.index]);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeWikiPopover();
+      }
+    };
+
+    textarea.addEventListener("input", onInput);
+    textarea.addEventListener("click", onClick);
+    textarea.addEventListener("keyup", onKeyUp);
+    textarea.addEventListener("keydown", onKeyDown);
+    return () => {
+      textarea.removeEventListener("input", onInput);
+      textarea.removeEventListener("click", onClick);
+      textarea.removeEventListener("keyup", onKeyUp);
+      textarea.removeEventListener("keydown", onKeyDown);
+    };
+  }, [detectWikiTrigger, insertWikiCandidate, closeWikiPopover]);
+
   const saveTags = useCallback(
     async (newTags: string[]) => {
       setLocalTags(newTags);
       try {
         const json = await invoke<string>("update_note", { id: note.id, tags: newTags });
         const updated = JSON.parse(json) as Note;
-        storeUpdateNote(note.id, { tags: updated.tags, updated_at: updated.updated_at });
+        const patch = { tags: updated.tags, updated_at: updated.updated_at };
+        if (isStandaloneNote(note)) updateStandaloneNoteLocal(note.id, patch);
+        else storeUpdateNote(note.id, patch);
       } catch (err) {
         console.error("update_note (tags) failed:", err);
       }
     },
-    [note.id, storeUpdateNote]
+    [note, storeUpdateNote, updateStandaloneNoteLocal]
   );
 
   const addTag = (raw: string) => {
@@ -268,7 +523,12 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     clearTimeout(saveTimerRef.current);
     try {
       await invoke("delete_note", { id: note.id });
-      removeNote(note.id);
+      if (isStandaloneNote(note)) {
+        removeStandaloneNoteLocal(note.id);
+        setNoteWorkspaceOpen(false);
+      } else {
+        removeNote(note.id);
+      }
       setSelectedNoteId(null);
     } catch (err) {
       console.error("delete_note failed:", err);
@@ -280,24 +540,27 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
     : null;
 
   return (
-    <div className="note-editor-wrap">
+    <div className={`note-editor-wrap${fullPage ? " note-editor-wrap--fullpage" : ""}`}>
       <div className="note-editor-bar">
         <button className="icon-btn" title="Back to notes" onClick={onBack}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </button>
-        <button className="icon-btn note-delete-btn" title="Delete note" onClick={handleDelete}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14H6L5 6" />
-            <path d="M9 6V4h6v2" />
-          </svg>
-        </button>
+        <div className="note-editor-bar-actions">
+          {extraHeaderActions}
+          <button className="icon-btn note-delete-btn" title="Delete note" onClick={handleDelete}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14H6L5 6" />
+              <path d="M9 6V4h6v2" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div className="note-editor-scroll">
-        <div className="note-editor-workspace">
+        <div className={`note-editor-workspace${!editorLineWrap ? " note-editor--nowrap" : ""}`}>
           {sourcePdf && note.source_page != null && (
             <button
               className="note-citation-pill"
@@ -374,7 +637,7 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
             </div>
           )}
 
-          <div data-color-mode="dark">
+          <div data-color-mode="dark" ref={editorWrapRef}>
             <MDEditor
               value={localContent}
               onChange={(val) => {
@@ -384,7 +647,7 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
               preview="edit"
               hideToolbar
               visibleDragbar={false}
-              height={480}
+              height={fullPage ? "100%" : 480}
               textareaProps={{
                 placeholder: "Write your note… link other notes with [[Note Title]]",
               }}
@@ -397,6 +660,46 @@ function NoteEditor({ note, onBack }: { note: Note; onBack: () => void }) {
           </div>
         </div>
       </div>
+
+      {wikiQuery !== null && wikiCoords && (
+        <div
+          className="wiki-link-popover"
+          style={{ top: wikiCoords.top + wikiCoords.height + 4, left: wikiCoords.left }}
+        >
+          {wikiCandidates.length === 0 ? (
+            <div className="wiki-link-empty">
+              {allNoteTitles === null ? "Loading…" : "No matches"}
+            </div>
+          ) : (
+            wikiCandidates.map((c, i) => (
+              <button
+                key={c.key}
+                className={`wiki-link-item${i === wikiActiveIndex ? " wiki-link-item--active" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertWikiCandidate(c);
+                }}
+                onMouseEnter={() => setWikiActiveIndex(i)}
+              >
+                <span className={`wiki-link-icon wiki-link-icon--${c.type}`}>
+                  {c.type === "note" ? (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M4 4h16v16H4z" />
+                      <path d="M8 9h8M8 13h5" />
+                    </svg>
+                  ) : (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                  )}
+                </span>
+                <span className="wiki-link-title">{c.title}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

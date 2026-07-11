@@ -24,6 +24,7 @@ const PROVIDERS = [
 ];
 
 type TestState = 'idle' | 'testing' | 'ok' | 'error';
+type SettingsTab = 'account' | 'editor' | 'data';
 
 export function SettingsPanel() {
   const {
@@ -31,8 +32,11 @@ export function SettingsPanel() {
     settingsPanelOpen, setSettingsPanelOpen,
     aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
+    editorFontSize, editorLineWrap, setUiPrefs,
     user, signOut,
   } = useStore();
+
+  const [activeTab, setActiveTab] = useState<SettingsTab>('account');
 
   const [provider, setProvider] = useState(aiProvider);
   const [model, setModel]       = useState(aiModel);
@@ -46,12 +50,19 @@ export function SettingsPanel() {
   const [billingBusy, setBillingBusy] = useState(false);
   const [billingError, setBillingError] = useState('');
 
+  const [fontSize, setFontSize] = useState(editorFontSize);
+  const [lineWrap, setLineWrap] = useState(editorLineWrap);
+
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
   useEffect(() => {
     getVersion().then(setAppVersion).catch(console.error);
   }, []);
 
   useEffect(() => {
     if (!settingsPanelOpen) return;
+    setActiveTab('account');
     setProvider(aiProvider);
     setModel(aiModel);
     setBaseUrl(aiBaseUrl);
@@ -59,7 +70,13 @@ export function SettingsPanel() {
     setUseCustomProvider(aiUseCustomProvider);
     setTestState('idle');
     setTestError('');
-  }, [settingsPanelOpen, aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider]);
+    setFontSize(editorFontSize);
+    setLineWrap(editorLineWrap);
+    setExportResult(null);
+    // Reset any unsaved live-preview CSS var back to the persisted value
+    // so a prior unsaved drag doesn't leak into a fresh panel open.
+    document.documentElement.style.setProperty('--note-font-size', `${editorFontSize}px`);
+  }, [settingsPanelOpen, aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider, editorFontSize, editorLineWrap]);
 
   const handleProviderChange = (p: string) => {
     setProvider(p);
@@ -111,13 +128,46 @@ export function SettingsPanel() {
         invoke('set_setting', { key: 'ai_base_url', value: baseUrl  }),
         invoke('set_setting', { key: 'ai_api_key',  value: apiKey   }),
         invoke('set_setting', { key: 'ai_use_custom_provider', value: String(useCustomProvider) }),
+        invoke('set_setting', { key: 'editor_font_size', value: String(fontSize) }),
+        invoke('set_setting', { key: 'editor_line_wrap', value: String(lineWrap) }),
       ]);
       setAiSettings({ aiProvider: provider, aiModel: model, aiBaseUrl: baseUrl, aiApiKey: apiKey, aiUseCustomProvider: useCustomProvider });
+      setUiPrefs({ editorFontSize: fontSize, editorLineWrap: lineWrap });
       setSettingsPanelOpen(false);
     } catch (err) {
       console.error('Failed to save settings:', err);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleExportLibrary = async () => {
+    setExporting(true);
+    setExportResult(null);
+    try {
+      const [pdfsJson, notesJson, highlightsJson, flashcardsJson] = await Promise.all([
+        invoke<string>('get_pdfs'),
+        invoke<string>('get_notes', { pdfId: null, includeDeleted: false }),
+        invoke<string>('get_all_highlights'),
+        invoke<string>('get_all_flashcards'),
+      ]);
+      const payload = {
+        exported_at: new Date().toISOString(),
+        pdfs: JSON.parse(pdfsJson),
+        notes: JSON.parse(notesJson),
+        highlights: JSON.parse(highlightsJson),
+        flashcards: JSON.parse(flashcardsJson),
+      };
+      const outputPath = await invoke<string>('save_text_file', {
+        defaultFilename: 'pagedge-library-export.json',
+        content: JSON.stringify(payload, null, 2),
+      });
+      if (outputPath === '') { setExporting(false); return; } // user cancelled
+      setExportResult({ ok: true, msg: outputPath });
+    } catch (err) {
+      setExportResult({ ok: false, msg: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -153,7 +203,7 @@ export function SettingsPanel() {
       <div className="settings-modal" onMouseDown={(e) => e.stopPropagation()}>
 
         <div className="settings-header">
-          <span className="settings-title">AI Settings</span>
+          <span className="settings-title">Settings</span>
           <button className="icon-btn" onClick={() => setSettingsPanelOpen(false)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -162,7 +212,15 @@ export function SettingsPanel() {
           </button>
         </div>
 
+        <div className="settings-tabs">
+          <button className={`settings-tab${activeTab === 'account' ? ' settings-tab--active' : ''}`} onClick={() => setActiveTab('account')}>Account</button>
+          <button className={`settings-tab${activeTab === 'editor' ? ' settings-tab--active' : ''}`} onClick={() => setActiveTab('editor')}>Editor</button>
+          <button className={`settings-tab${activeTab === 'data' ? ' settings-tab--active' : ''}`} onClick={() => setActiveTab('data')}>Data</button>
+        </div>
+
         <div className="settings-body">
+          {activeTab === 'account' && (
+          <>
           {user && (
             <div className="settings-account">
               <div className="settings-account-row">
@@ -276,26 +334,88 @@ export function SettingsPanel() {
               Sign in to configure AI provider settings.
             </p>
           )}
+          </>
+          )}
+
+          {activeTab === 'editor' && (
+            <div className="settings-tab-panel">
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="editor-font-size">
+                  Note editor font size — {fontSize}px
+                </label>
+                <input
+                  id="editor-font-size"
+                  className="settings-slider"
+                  type="range"
+                  min={11}
+                  max={20}
+                  step={1}
+                  value={fontSize}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setFontSize(v);
+                    document.documentElement.style.setProperty('--note-font-size', `${v}px`);
+                  }}
+                />
+              </div>
+
+              <div className="settings-field settings-field--row">
+                <label className="settings-label" htmlFor="editor-line-wrap">Wrap long lines</label>
+                <input
+                  id="editor-line-wrap"
+                  type="checkbox"
+                  checked={lineWrap}
+                  onChange={(e) => setLineWrap(e.target.checked)}
+                />
+              </div>
+
+              <p className="settings-feedback">
+                Applies to the notes markdown editor.
+              </p>
+            </div>
+          )}
+
+          {activeTab === 'data' && (
+            <div className="settings-tab-panel">
+              <button
+                className="settings-btn settings-btn--ghost"
+                onClick={handleExportLibrary}
+                disabled={exporting}
+              >
+                {exporting ? 'Exporting…' : 'Export Library Data'}
+              </button>
+              <p className="settings-feedback">
+                Exports all PDFs metadata, notes, highlights, and flashcards as a single JSON backup file.
+              </p>
+              {exportResult && (
+                <p className={`settings-feedback ${exportResult.ok ? 'settings-feedback--ok' : 'settings-feedback--err'}`}>
+                  {exportResult.ok ? `Saved to ${exportResult.msg}` : exportResult.msg}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
-        <div className="settings-footer">
-          {isAuthenticated && useCustomProvider && (
+        {activeTab !== 'data' && (
+          <div className="settings-footer">
+            {activeTab === 'account' && isAuthenticated && useCustomProvider && (
+              <button
+                className="settings-btn settings-btn--ghost"
+                onClick={handleTest}
+                disabled={testState === 'testing'}
+              >
+                {testState === 'testing' ? 'Testing…' : 'Test connection'}
+              </button>
+            )}
             <button
-              className="settings-btn settings-btn--ghost"
-              onClick={handleTest}
-              disabled={testState === 'testing'}
+              className="settings-btn settings-btn--primary"
+              onClick={handleSave}
+              disabled={saving}
             >
-              {testState === 'testing' ? 'Testing…' : 'Test connection'}
+              {saving ? 'Saving…' : 'Save'}
             </button>
-          )}
-          <button
-            className="settings-btn settings-btn--primary"
-            onClick={handleSave}
-            disabled={saving}
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+          </div>
+        )}
 
         {appVersion && (
           <p className="settings-version">Pagedge v{appVersion}</p>
