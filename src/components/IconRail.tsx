@@ -25,7 +25,9 @@ export function IconRail() {
     <nav className="icon-rail">
       {/* Brand mark — global "go home and clear clutter" escape hatch */}
       <div className="ir-brand">
-        <button className="ir-logo" title="Home" onClick={goHome}>P</button>
+        <button className="ir-logo" title="Home" onClick={goHome}>
+          <img src="/logo.png" alt="Pagedge" />
+        </button>
       </div>
 
       {/* Primary nav */}
