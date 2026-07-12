@@ -2059,6 +2059,10 @@
   color: var(--text-muted);
 }
 
+.settings-account-quota--warn {
+  color: var(--accent-bright);
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -2464,6 +2468,42 @@
 .vt-ai-btn {
   font-size: 14px;
   color: var(--accent-bright);
+}
+.vt-ai-btn--active {
+  background: rgba(255, 214, 10, 0.14);
+  border-radius: 5px;
+}
+
+.vt-ai-menu {
+  position: relative;
+  display: flex;
+}
+
+.vt-ai-dropdown {
+  min-width: 200px;
+  /* Overrides .zoom-dropdown's left: 0 — this button sits near the right edge
+     of the viewer pane (vt-group--push), so opening leftward from the right
+     edge keeps the menu from overflowing into the right panel. */
+  left: auto;
+  right: 0;
+}
+
+.vt-ai-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vt-ai-pro-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(255, 200, 128, 0.14);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
 }
 
 /* ── Chat ── */
@@ -3582,6 +3622,16 @@
 
 .pdf-item--remote .pdf-icon {
   color: var(--text-muted);
+}
+
+/* ── Compare picker: PDF not yet ingested ── */
+.pdf-item--disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.pdf-item--disabled:hover {
+  background: transparent;
 }
 
 .pdf-remote-badge {

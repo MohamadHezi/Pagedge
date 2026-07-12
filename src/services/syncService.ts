@@ -224,6 +224,32 @@ async function authedFetch(path: string, init: RequestInit): Promise<Response> {
   return response;
 }
 
+// ── Status indicator (best-effort, UI-only) ─────────────────────────────────
+// Drives the "Backed up · synced …" line in Settings. Not a source of truth
+// for sync correctness — pushPdf/pullPdf's own retry/cursor logic is. Push
+// and pull calls can overlap (per-PDF debounce, foreground pull looping over
+// several PDFs), so this is a simple open-op counter: if ops overlap and one
+// fails while another succeeds, whichever finishes last wins the status —
+// acceptable for a friendly indicator, not worth a queue for this.
+let activeSyncOps = 0;
+
+function beginSyncOp(): void {
+  activeSyncOps++;
+  useStore.getState().setSyncStatus('syncing');
+}
+
+function endSyncOp(success: boolean): void {
+  activeSyncOps = Math.max(0, activeSyncOps - 1);
+  if (success) {
+    const now = new Date().toISOString();
+    useStore.getState().setLastSyncedAt(now);
+    invoke('set_setting', { key: 'sync_last_synced_at', value: now }).catch(() => {});
+  }
+  if (activeSyncOps === 0) {
+    useStore.getState().setSyncStatus(success ? 'synced' : 'error');
+  }
+}
+
 // ── Retry/backoff ────────────────────────────────────────────────────────
 const RETRY_DELAYS_MS = [1000, 3000, 8000];
 
@@ -325,24 +351,31 @@ export async function pushPdf(pdfId: string): Promise<void> {
   const entities = await loadEntitiesForPush(pdfId);
   if (!entities.highlights.length && !entities.notes.length && !entities.flashcards.length) return;
 
-  await withRetry(async () => {
-    const response = await authedFetch('/sync/push', {
-      method: 'POST',
-      body: JSON.stringify({ content_hash: pdf.content_hash, display_name: pdf.filename, entities }),
-    });
-    if (!response.ok) throw new Error(`sync push failed (${response.status})`);
-    const data = (await response.json().catch(() => ({}))) as PushResponse;
+  beginSyncOp();
+  try {
+    await withRetry(async () => {
+      const response = await authedFetch('/sync/push', {
+        method: 'POST',
+        body: JSON.stringify({ content_hash: pdf.content_hash, display_name: pdf.filename, entities }),
+      });
+      if (!response.ok) throw new Error(`sync push failed (${response.status})`);
+      const data = (await response.json().catch(() => ({}))) as PushResponse;
 
-    for (const r of data.results?.highlights ?? []) {
-      if (r.status === 'rejected' && r.server) applyServerHighlight(r.server as unknown as ServerHighlight, pdfId);
-    }
-    for (const r of data.results?.notes ?? []) {
-      if (r.status === 'rejected' && r.server) applyServerNote(r.server as unknown as ServerNote, pdfId);
-    }
-    for (const r of data.results?.flashcards ?? []) {
-      if (r.status === 'rejected' && r.server) applyServerFlashcard(r.server as unknown as ServerFlashcard, pdfId);
-    }
-  });
+      for (const r of data.results?.highlights ?? []) {
+        if (r.status === 'rejected' && r.server) applyServerHighlight(r.server as unknown as ServerHighlight, pdfId);
+      }
+      for (const r of data.results?.notes ?? []) {
+        if (r.status === 'rejected' && r.server) applyServerNote(r.server as unknown as ServerNote, pdfId);
+      }
+      for (const r of data.results?.flashcards ?? []) {
+        if (r.status === 'rejected' && r.server) applyServerFlashcard(r.server as unknown as ServerFlashcard, pdfId);
+      }
+    });
+    endSyncOp(true);
+  } catch (err) {
+    endSyncOp(false);
+    throw err;
+  }
 }
 
 // ── Pull ──────────────────────────────────────────────────────────────────
@@ -393,46 +426,53 @@ export async function pullPdf(contentHash: string): Promise<void> {
 
   const since = lastPullAtByHash.get(contentHash) ?? new Date(0).toISOString();
 
-  await withRetry(async () => {
-    const data = await pullRaw([contentHash], since);
-    const bundle = data.pdfs[contentHash];
+  beginSyncOp();
+  try {
+    await withRetry(async () => {
+      const data = await pullRaw([contentHash], since);
+      const bundle = data.pdfs[contentHash];
 
-    // The next cursor must be derived from server-stamped row data, not the
-    // client clock — client/server clock skew would otherwise permanently
-    // skip any row whose updated_at falls after a fast local clock's "now".
-    //
-    // Rows within bundle.highlights/notes/flashcards aren't guaranteed to
-    // arrive in updated_at order, so if any row in the batch fails to
-    // persist we don't advance the cursor at all this cycle rather than
-    // capping at the highest *successful* row — a later-arriving success
-    // with a newer timestamp than an earlier failure would otherwise push
-    // the cursor past the failed row and it would never be retried. Only
-    // once every row in the batch has been confirmed persisted do we know
-    // the true max updated_at is safe to use as the next `since`.
-    let maxRowUpdatedAt: string | null = null;
-    let allPersisted = true;
+      // The next cursor must be derived from server-stamped row data, not the
+      // client clock — client/server clock skew would otherwise permanently
+      // skip any row whose updated_at falls after a fast local clock's "now".
+      //
+      // Rows within bundle.highlights/notes/flashcards aren't guaranteed to
+      // arrive in updated_at order, so if any row in the batch fails to
+      // persist we don't advance the cursor at all this cycle rather than
+      // capping at the highest *successful* row — a later-arriving success
+      // with a newer timestamp than an earlier failure would otherwise push
+      // the cursor past the failed row and it would never be retried. Only
+      // once every row in the batch has been confirmed persisted do we know
+      // the true max updated_at is safe to use as the next `since`.
+      let maxRowUpdatedAt: string | null = null;
+      let allPersisted = true;
 
-    const track = (updatedAt: string, persisted: boolean) => {
-      if (!persisted) allPersisted = false;
-      if (maxRowUpdatedAt === null || versionOf(updatedAt) > versionOf(maxRowUpdatedAt)) {
-        maxRowUpdatedAt = updatedAt;
+      const track = (updatedAt: string, persisted: boolean) => {
+        if (!persisted) allPersisted = false;
+        if (maxRowUpdatedAt === null || versionOf(updatedAt) > versionOf(maxRowUpdatedAt)) {
+          maxRowUpdatedAt = updatedAt;
+        }
+      };
+
+      if (bundle) {
+        for (const row of bundle.highlights) track(row.updated_at, await applyServerHighlight(row, pdf.id));
+        for (const row of bundle.notes) track(row.updated_at, await applyServerNote(row, pdf.id));
+        for (const row of bundle.flashcards) track(row.updated_at, await applyServerFlashcard(row, pdf.id));
       }
-    };
 
-    if (bundle) {
-      for (const row of bundle.highlights) track(row.updated_at, await applyServerHighlight(row, pdf.id));
-      for (const row of bundle.notes) track(row.updated_at, await applyServerNote(row, pdf.id));
-      for (const row of bundle.flashcards) track(row.updated_at, await applyServerFlashcard(row, pdf.id));
-    }
+      if (allPersisted && maxRowUpdatedAt !== null) {
+        lastPullAtByHash.set(contentHash, maxRowUpdatedAt);
+      }
+      // else: leave the cursor at `since` so the next pull re-fetches this
+      // entire batch, including whichever row(s) failed to persist.
 
-    if (allPersisted && maxRowUpdatedAt !== null) {
-      lastPullAtByHash.set(contentHash, maxRowUpdatedAt);
-    }
-    // else: leave the cursor at `since` so the next pull re-fetches this
-    // entire batch, including whichever row(s) failed to persist.
-
-    cachePendingFromSummaries(data.other_synced).catch((err) => console.error('[sync] pending cache refresh failed', err));
-  });
+      cachePendingFromSummaries(data.other_synced).catch((err) => console.error('[sync] pending cache refresh failed', err));
+    });
+    endSyncOp(true);
+  } catch (err) {
+    endSyncOp(false);
+    throw err;
+  }
 }
 
 // Called on app foreground: pulls every PDF the user has synced locally

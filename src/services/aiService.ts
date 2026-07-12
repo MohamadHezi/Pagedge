@@ -133,7 +133,11 @@ async function callProxy(
 
   if (response.status === 400) {
     const data = await response.json().catch(() => ({}));
-    if (data?.error === 'context_too_large') showPaywall('context_too_large');
+    // The backend's context-size guard (100k chars) applies to Pro too, as an
+    // abuse ceiling rather than a tier limit — only free users should see this
+    // as an upsell prompt. A Pro user hitting the abuse ceiling just gets the
+    // thrown error as a normal message, not an "Upgrade to Pro" paywall.
+    if (data?.error === 'context_too_large' && user.tier === 'free') showPaywall('context_too_large');
     throw new Error(data?.error || 'Request rejected by AI proxy');
   }
 

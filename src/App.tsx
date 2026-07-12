@@ -6,6 +6,8 @@ import { MainArea } from "./components/MainArea";
 import { RightPanel } from "./components/RightPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SummaryPanel } from "./components/SummaryPanel";
+import { StudyGuidePanel } from "./components/StudyGuidePanel";
+import { ComparePanel } from "./components/ComparePanel";
 import { SearchModal } from "./components/SearchModal";
 import { ExportDialog } from "./components/ExportDialog";
 import { ReviewMode } from "./components/ReviewMode";
@@ -32,7 +34,7 @@ function App() {
     refreshUserFromMe, closePaywall, completeEmailVerification,
     emailVerifyToastOpen, dismissEmailVerifyToast,
     authPromptOpen, authPromptReason,
-    loadFolders,
+    loadFolders, loadLastSyncedAt,
   } = useStore();
 
   const [appToast, setAppToast] = useState<string | null>(null);
@@ -51,7 +53,8 @@ function App() {
     initAuth();
     checkForUpdates();
     refreshRemoteOnlyPdfs().catch(console.error);
-  }, [loadPdfs, loadFolders, loadAiSettings, loadUiPrefs, initAuth]);
+    loadLastSyncedAt().catch(console.error);
+  }, [loadPdfs, loadFolders, loadAiSettings, loadUiPrefs, initAuth, loadLastSyncedAt]);
 
   // pagedge://stripe-success / pagedge://stripe-cancel — fired when Stripe
   // Checkout / the billing portal redirects back to the desktop app.
@@ -136,6 +139,8 @@ function App() {
       </div>
       <SettingsPanel />
       <SummaryPanel />
+      <StudyGuidePanel />
+      <ComparePanel />
       <SearchModal />
       <ExportDialog />
       <ReviewMode />

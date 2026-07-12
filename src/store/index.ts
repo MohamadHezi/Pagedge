@@ -29,7 +29,14 @@ export interface AuthUser {
   resetAt: string | null;
 }
 
-export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro';
+export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro' | 'library_limit' | 'study_guide_requires_pro' | 'compare_requires_pro';
+
+export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
+
+// Free-tier PDF library cap — doesn't depend on which AI provider a user has
+// configured (unlike the AI-call quota), so it still applies to users who've
+// enabled "Use my own AI provider" and never touch the AI quota gate at all.
+export const FREE_TIER_PDF_LIMIT = 50;
 
 interface AppState {
   // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -113,6 +120,15 @@ interface AppState {
   pendingImportPrompt: PendingImportPrompt | null;
   setPendingImportPrompt: (prompt: PendingImportPrompt | null) => void;
   clearPendingImportPrompt: () => void;
+
+  // Best-effort backup status shown in Settings — not a source of truth for
+  // sync correctness (pushPdf/pullPdf own that), just a friendly indicator
+  // so free users see what they're missing and Pro users see it's working.
+  syncStatus: SyncStatus;
+  setSyncStatus: (status: SyncStatus) => void;
+  lastSyncedAt: string | null;
+  setLastSyncedAt: (t: string | null) => void;
+  loadLastSyncedAt: () => Promise<void>;
 
   // ── Highlights ───────────────────────────────────────────────────────────────
   highlights: Highlight[];
@@ -215,6 +231,23 @@ interface AppState {
   setSummary: (content: string | null, lens: LensKey | null) => void;
   clearSummary: () => void;
   setIsSummarizing: (loading: boolean) => void;
+
+  // ── Study guide (Pro) ────────────────────────────────────────────────────────
+  studyGuideContent: string | null;
+  isGeneratingStudyGuide: boolean;
+  setStudyGuide: (content: string | null) => void;
+  clearStudyGuide: () => void;
+  setIsGeneratingStudyGuide: (loading: boolean) => void;
+
+  // ── Cross-document compare (Pro) ─────────────────────────────────────────────
+  comparePickerOpen: boolean;
+  setComparePickerOpen: (open: boolean) => void;
+  compareTargetPdfId: string | null;
+  compareContent: string | null;
+  isComparing: boolean;
+  setCompareResult: (targetPdfId: string | null, content: string | null) => void;
+  clearCompare: () => void;
+  setIsComparing: (loading: boolean) => void;
 
   // ── Right panel ───────────────────────────────────────────────────────────────
   rightPanelTab: 'notes' | 'highlights' | 'chat';
@@ -455,6 +488,15 @@ export const useStore = create<AppState>((set, get) => ({
   trashedPdfs: [],
 
   addPdf: async (filepath: string): Promise<Pdf> => {
+    const state = get();
+    // add_pdf is idempotent for a filepath already in the library (INSERT OR
+    // IGNORE on the Rust side) — only block genuinely new imports at the cap,
+    // not a re-drop/re-select of a PDF the user already has.
+    const alreadyInLibrary = state.pdfs.some((p) => p.filepath === filepath);
+    if (!alreadyInLibrary && state.user?.tier !== 'pro' && state.pdfs.length >= FREE_TIER_PDF_LIMIT) {
+      state.showPaywall('library_limit');
+      throw new Error('library_limit');
+    }
     const json = await invoke<string>("add_pdf", { filepath });
     const pdf: Pdf = JSON.parse(json);
     set((state) => {
@@ -611,7 +653,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   selectPdf: (id) => {
-    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false });
+    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, studyGuideContent: null, isGeneratingStudyGuide: false, comparePickerOpen: false, compareTargetPdfId: null, compareContent: null, isComparing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false });
     if (id) {
       const pdf = useStore.getState().pdfs.find((p) => p.id === id);
       if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
@@ -643,6 +685,15 @@ export const useStore = create<AppState>((set, get) => ({
   pendingImportPrompt: null,
   setPendingImportPrompt: (prompt) => set({ pendingImportPrompt: prompt }),
   clearPendingImportPrompt: () => set({ pendingImportPrompt: null }),
+
+  syncStatus: 'idle',
+  setSyncStatus: (status) => set({ syncStatus: status }),
+  lastSyncedAt: null,
+  setLastSyncedAt: (t) => set({ lastSyncedAt: t }),
+  loadLastSyncedAt: async () => {
+    const v = await invoke<string>('get_setting', { key: 'sync_last_synced_at' }).catch(() => '');
+    if (v) set({ lastSyncedAt: v });
+  },
 
   // ── Highlights ───────────────────────────────────────────────────────────────
   highlights: [],
@@ -824,6 +875,21 @@ export const useStore = create<AppState>((set, get) => ({
   setSummary: (content, lens) => set({ summaryContent: content, summaryLens: lens }),
   clearSummary: () => set({ summaryContent: null, summaryLens: null, isSummarizing: false }),
   setIsSummarizing: (loading) => set({ isSummarizing: loading }),
+
+  studyGuideContent: null,
+  isGeneratingStudyGuide: false,
+  setStudyGuide: (content) => set({ studyGuideContent: content }),
+  clearStudyGuide: () => set({ studyGuideContent: null, isGeneratingStudyGuide: false }),
+  setIsGeneratingStudyGuide: (loading) => set({ isGeneratingStudyGuide: loading }),
+
+  comparePickerOpen: false,
+  setComparePickerOpen: (open) => set({ comparePickerOpen: open }),
+  compareTargetPdfId: null,
+  compareContent: null,
+  isComparing: false,
+  setCompareResult: (targetPdfId, content) => set({ compareTargetPdfId: targetPdfId, compareContent: content }),
+  clearCompare: () => set({ compareTargetPdfId: null, compareContent: null, isComparing: false }),
+  setIsComparing: (loading) => set({ isComparing: loading }),
 
   // ── Right panel ───────────────────────────────────────────────────────────────
   rightPanelTab: 'notes',

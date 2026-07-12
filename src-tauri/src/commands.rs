@@ -2126,13 +2126,24 @@ fn flatten_text_boxes_to_page(
 // Generic "save arbitrary text/JSON to disk" command — reusable beyond the
 // library export feature it was introduced for.
 #[tauri::command]
-pub fn save_text_file(app: AppHandle, default_filename: String, content: String) -> Result<String, String> {
+pub fn save_text_file(
+    app: AppHandle,
+    default_filename: String,
+    content: String,
+    filter_label: Option<String>,
+    filter_ext: Option<String>,
+) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
+
+    // Defaults preserve the original JSON-only behavior for existing callers
+    // (e.g. SettingsPanel's library export) that don't pass these params.
+    let label = filter_label.unwrap_or_else(|| "JSON Files".to_string());
+    let ext = filter_ext.unwrap_or_else(|| "json".to_string());
 
     let save_fp = app
         .dialog()
         .file()
-        .add_filter("JSON Files", &["json"])
+        .add_filter(&label, &[ext.as_str()])
         .set_file_name(&default_filename)
         .blocking_save_file();
 

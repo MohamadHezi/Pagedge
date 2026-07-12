@@ -174,6 +174,13 @@ export interface RawChunk {
   embedding: number[]; // raw u8 bytes from Rust Vec<u8>
 }
 
+/** get_chunks_for_pdf's response shape — text only, no embedding. */
+export interface PdfChunk {
+  chunk_index: number;
+  page: number;
+  content: string;
+}
+
 // ── Graph View (knowledge map) ─────────────────────────────────────────────
 
 export type GraphNodeType = 'pdf' | 'note' | 'flashcard' | 'tag';

@@ -3,7 +3,7 @@ import MDEditor from "@uiw/react-md-editor";
 import "@uiw/react-md-editor/markdown-editor.css";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
-import type { Note, ChatMessage, Highlight } from "../types";
+import type { Note, ChatMessage, Highlight, PdfChunk } from "../types";
 import { HIGHLIGHT_COLORS, HIGHLIGHT_COLOR_KEYS, type HighlightColorKey } from "../constants/highlights";
 import { callAI } from "../services/aiService";
 import { isStandaloneNote } from "../lib/notes";
@@ -51,19 +51,13 @@ const SHORT_LABEL: Record<HighlightColorKey, string> = {
   pink: "Quote",
 };
 
-interface StoredChunk {
-  chunk_index: number;
-  page: number;
-  content: string;
-}
-
 async function buildContext(
   pdfId: string,
   question: string,
 ): Promise<{ context: string; chunkCount: number }> {
   console.log('[chat] buildContext: fetching chunks for pdfId =', pdfId);
   const json = await invoke<string>('get_chunks_for_pdf', { pdfId });
-  const chunks: StoredChunk[] = JSON.parse(json);
+  const chunks: PdfChunk[] = JSON.parse(json);
   console.log('[chat] buildContext: retrieved', chunks.length, 'chunks');
 
   if (chunks.length === 0) return { context: '', chunkCount: 0 };

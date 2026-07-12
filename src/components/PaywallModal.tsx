@@ -2,6 +2,34 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { startProCheckout } from '../services/stripeService';
 import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
+import { FREE_TIER_PDF_LIMIT, type PaywallReason } from '../store';
+
+const PAYWALL_COPY: Record<PaywallReason, { title: string; body: string }> = {
+  context_too_large: {
+    title: 'Document too large',
+    body: 'This document is too large for the free plan. Upgrade to Pro for unlimited document size.',
+  },
+  sync_requires_pro: {
+    title: 'Sync is a Pro feature',
+    body: 'Syncing your highlights, notes, and flashcards across devices is a Pro feature. Upgrade to Pro to keep everything in sync.',
+  },
+  quota_exceeded: {
+    title: 'Monthly limit reached',
+    body: `You've used all ${FREE_TIER_MONTHLY_CALLS} AI calls for this month. Upgrade to Pro for unlimited AI.`,
+  },
+  library_limit: {
+    title: 'Library limit reached',
+    body: `Your free library holds up to ${FREE_TIER_PDF_LIMIT} PDFs. Upgrade to Pro for an unlimited library.`,
+  },
+  study_guide_requires_pro: {
+    title: 'Study guides are a Pro feature',
+    body: 'AI-generated study guides synthesize your highlights, notes, and flashcards into one document. Upgrade to Pro to generate them.',
+  },
+  compare_requires_pro: {
+    title: 'Compare is a Pro feature',
+    body: 'AI-powered document comparison finds agreements, differences, and unique points across two documents. Upgrade to Pro to use it.',
+  },
+};
 
 export function PaywallModal() {
   const { isAuthenticated, requireAuth, paywallOpen, paywallReason, closePaywall, user } = useStore();
@@ -30,21 +58,9 @@ export function PaywallModal() {
   return (
     <div className="paywall-overlay" onMouseDown={closePaywall}>
       <div className="paywall-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <h2 className="paywall-title">
-          {paywallReason === 'context_too_large'
-            ? 'Document too large'
-            : paywallReason === 'sync_requires_pro'
-            ? 'Sync is a Pro feature'
-            : 'Monthly limit reached'}
-        </h2>
+        <h2 className="paywall-title">{PAYWALL_COPY[paywallReason].title}</h2>
 
-        <p className="paywall-body">
-          {paywallReason === 'context_too_large'
-            ? 'This document is too large for the free plan. Upgrade to Pro for unlimited document size.'
-            : paywallReason === 'sync_requires_pro'
-            ? 'Syncing your highlights, notes, and flashcards across devices is a Pro feature. Upgrade to Pro to keep everything in sync.'
-            : `You've used all ${FREE_TIER_MONTHLY_CALLS} AI calls for this month. Upgrade to Pro for unlimited AI.`}
-        </p>
+        <p className="paywall-body">{PAYWALL_COPY[paywallReason].body}</p>
 
         {paywallReason === 'quota_exceeded' && resetLabel && (
           <p className="paywall-reset-note">Resets on {resetLabel}</p>

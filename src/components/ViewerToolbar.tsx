@@ -16,6 +16,8 @@ interface ViewerToolbarProps {
   onSummarizePage: () => void;
   onToggleDrawMode: () => void;
   onExportPdf: () => void;
+  onGenerateStudyGuide: () => void;
+  onOpenComparePicker: () => void;
 }
 
 export function ViewerToolbar({
@@ -32,13 +34,17 @@ export function ViewerToolbar({
   onSummarizePage,
   onToggleDrawMode,
   onExportPdf,
+  onGenerateStudyGuide,
+  onOpenComparePicker,
 }: ViewerToolbarProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [zoomEditing, setZoomEditing] = useState(false);
   const [zoomInputVal, setZoomInputVal] = useState("");
   const [pageEditing, setPageEditing] = useState(false);
   const [pageInputVal, setPageInputVal] = useState(String(currentPage));
+  const [aiMenuOpen, setAiMenuOpen] = useState(false);
   const zoomRef = useRef<HTMLDivElement>(null);
+  const aiMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!pageEditing) setPageInputVal(String(currentPage));
@@ -54,6 +60,17 @@ export function ViewerToolbar({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [dropdownOpen]);
+
+  useEffect(() => {
+    if (!aiMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (aiMenuRef.current && !aiMenuRef.current.contains(e.target as Node)) {
+        setAiMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [aiMenuOpen]);
 
   const commitPage = () => {
     const n = parseInt(pageInputVal, 10);
@@ -181,9 +198,40 @@ export function ViewerToolbar({
             <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
           </svg>
         </button>
-        <button className="icon-btn vt-ai-btn" title="Summarize this page" onClick={onSummarizePage}>
-          ✦
-        </button>
+        <div className="vt-ai-menu" ref={aiMenuRef}>
+          <button
+            className={`icon-btn vt-ai-btn${aiMenuOpen ? " vt-ai-btn--active" : ""}`}
+            title="AI tools"
+            onClick={() => setAiMenuOpen((o) => !o)}
+          >
+            ✦
+          </button>
+          {aiMenuOpen && (
+            <div className="zoom-dropdown vt-ai-dropdown">
+              <button
+                className="zoom-dropdown-item"
+                onClick={() => { onSummarizePage(); setAiMenuOpen(false); }}
+              >
+                Summarize this page
+              </button>
+              <div className="zoom-dropdown-sep" />
+              <button
+                className="zoom-dropdown-item vt-ai-dropdown-item"
+                onClick={() => { onGenerateStudyGuide(); setAiMenuOpen(false); }}
+              >
+                Generate study guide
+                <span className="vt-ai-pro-tag">Pro</span>
+              </button>
+              <button
+                className="zoom-dropdown-item vt-ai-dropdown-item"
+                onClick={() => { onOpenComparePicker(); setAiMenuOpen(false); }}
+              >
+                Compare with document
+                <span className="vt-ai-pro-tag">Pro</span>
+              </button>
+            </div>
+          )}
+        </div>
         <button className="icon-btn" title="New note" onClick={onNewNote}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />

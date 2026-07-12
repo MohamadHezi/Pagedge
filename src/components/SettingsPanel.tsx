@@ -4,6 +4,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useStore } from '../store';
 import { startProCheckout, openBillingPortal } from '../services/stripeService';
 import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
+import { FREE_TIER_PDF_LIMIT } from '../store';
 
 const PROVIDER_URLS: Record<string, string> = {
   ollama:      'http://localhost:11434/v1',
@@ -26,6 +27,18 @@ const PROVIDERS = [
 type TestState = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsTab = 'account' | 'editor' | 'data';
 
+function formatRelativeTime(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return 'just now';
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} hr ago`;
+  const day = Math.floor(hr / 24);
+  return `${day} day${day === 1 ? '' : 's'} ago`;
+}
+
 export function SettingsPanel() {
   const {
     isAuthenticated, requireAuth,
@@ -33,7 +46,7 @@ export function SettingsPanel() {
     aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
     editorFontSize, editorLineWrap, setUiPrefs,
-    user, signOut,
+    user, signOut, syncStatus, lastSyncedAt, pdfs,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('account');
@@ -246,6 +259,28 @@ export function SettingsPanel() {
                   </button>
                 </div>
               )}
+              {user.tier === 'free' && (
+                <div className="settings-account-row">
+                  <span className={`settings-account-quota${pdfs.length >= FREE_TIER_PDF_LIMIT ? ' settings-account-quota--warn' : ''}`}>
+                    {pdfs.length} / {FREE_TIER_PDF_LIMIT} PDFs in your library
+                  </span>
+                </div>
+              )}
+              <div className="settings-account-row">
+                {user.tier === 'pro' ? (
+                  <span className="settings-account-quota">
+                    {syncStatus === 'syncing'
+                      ? 'Backing up…'
+                      : lastSyncedAt
+                        ? `Backed up · synced ${formatRelativeTime(lastSyncedAt)}`
+                        : 'Backup enabled — syncing shortly'}
+                  </span>
+                ) : (
+                  <span className="settings-account-quota settings-account-quota--warn">
+                    Not backed up — highlights, notes, and flashcards live only on this device
+                  </span>
+                )}
+              </div>
               {billingError && <p className="settings-feedback settings-feedback--err">{billingError}</p>}
             </div>
           )}

@@ -4,13 +4,14 @@ import { TextLayer } from "pdfjs-dist";
 import type { PDFDocumentProxy, PageViewport, RenderTask } from "pdfjs-dist";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
-import type { Highlight, HlRect, LensKey, Note, Drawing, DrawPoint, DrawToolType, TextBox } from "../types";
+import type { Highlight, HlRect, LensKey, Note, Drawing, DrawPoint, DrawToolType, TextBox, PdfChunk } from "../types";
 import {
   HIGHLIGHT_COLORS,
   HIGHLIGHT_COLOR_KEYS,
   type HighlightColorKey,
 } from "../constants/highlights";
 import { ViewerToolbar } from "./ViewerToolbar";
+import { ComparePickerModal } from "./ComparePickerModal";
 import { LensSwitcher } from "./LensSwitcher";
 import { AnnotationDock } from "./AnnotationDock";
 import { TextBoxLayer, DEFAULT_W, DEFAULT_H } from "./TextBoxLayer";
@@ -52,6 +53,61 @@ const LENS_LABEL: Record<Exclude<LensKey, 'default'>, string> = {
   flashcards: 'Flashcards',
   quotes:     'Quotes',
 };
+
+// ── Study guide (Pro) ────────────────────────────────────────────────────────
+const STUDY_GUIDE_SYSTEM =
+  'You are a study-guide writer helping a student review a document they have ' +
+  'already annotated. Produce clear, well-structured Markdown study notes using ' +
+  'the section headings given. Omit any section for which no source material is ' +
+  'provided below. Do not explain your process — output only the study guide.';
+
+const STUDY_GUIDE_SECTIONS =
+  '## Overview & Key Concepts\n' +
+  'Synthesize the "key concept" highlights and notes into a cohesive overview — ' +
+  'do not just list them, group related ideas and explain how they connect.\n\n' +
+  '## Areas to Review\n' +
+  'For each "confused / revisit" highlight, give a short, clear explanation aimed ' +
+  'at resolving the confusion.\n\n' +
+  '## Notable Quotes\n' +
+  'List the saved quotes with one line on why each is significant.\n\n' +
+  '## Flashcard Review (Q&A)\n' +
+  'Present the flashcards as a Q&A appendix, question then answer.';
+
+// ── Cross-document compare (Pro) ─────────────────────────────────────────────
+const COMPARE_SYSTEM =
+  'You are a research assistant comparing two documents for a reader who has both ' +
+  'open side by side. Be concise, structured, and evidence-based — for every point ' +
+  'you make, say which document it comes from by name. The excerpts you are given ' +
+  'are partial samples of each document, not the complete text; do not claim ' +
+  'completeness.';
+
+// Even/stratified sampling by chunk_index, capped by a character budget — not
+// embedding-similarity. The AI does the actual comparison reasoning over raw
+// text, so embedding math buys nothing here; a cheap spread across
+// beginning/middle/end (via get_chunks_for_pdf, already scoped server-side)
+// is simpler than decoding embeddings via get_all_chunks for this purpose.
+function buildCompareExcerpt(chunks: PdfChunk[], budgetChars = 8000, maxChunks = 12): string {
+  const sorted = [...chunks].sort((a, b) => a.chunk_index - b.chunk_index);
+  const totalChars = sorted.reduce((sum, c) => sum + c.content.length, 0);
+
+  let pool = sorted;
+  if (totalChars > budgetChars && sorted.length > maxChunks) {
+    const n = Math.min(maxChunks, sorted.length);
+    const step = sorted.length / n;
+    pool = Array.from({ length: n }, (_, i) => sorted[Math.floor(i * step)]);
+  }
+
+  const selected: PdfChunk[] = [];
+  let acc = 0;
+  for (const c of pool) {
+    if (acc > 0 && acc + c.content.length > budgetChars) break;
+    selected.push(c);
+    acc += c.content.length;
+  }
+  if (selected.length === 0 && pool.length > 0) selected.push(pool[0]);
+
+  return selected.map((c) => `[Page ${c.page}]\n${c.content}`).join('\n\n---\n\n');
+}
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
@@ -706,7 +762,11 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   const {
     isAuthenticated,
     requireAuth,
+    user,
+    showPaywall,
     selectedPdfId,
+    pdfs,
+    notes,
     highlights,
     loadHighlights,
     addHighlight,
@@ -760,6 +820,13 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     setRequestOutlineExtraction,
     drawingClipboard,
     setDrawingClipboard,
+    setStudyGuide,
+    clearStudyGuide,
+    setIsGeneratingStudyGuide,
+    setComparePickerOpen,
+    setCompareResult,
+    setIsComparing,
+    clearCompare,
   } = useStore();
 
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -1179,6 +1246,115 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       setIsSummarizing(false);
     }
   }, [activeLens, highlights, setSummary, setIsSummarizing, clearSummary, showToast]);
+
+  // ── Study guide (Pro) ─────────────────────────────────────────────────────
+  const handleGenerateStudyGuide = useCallback(async () => {
+    if (!isAuthenticated) return requireAuth('Sign in to generate a study guide', () => handleGenerateStudyGuide());
+    if (user?.tier !== 'pro') {
+      showPaywall('study_guide_requires_pro');
+      return;
+    }
+
+    const byColor: Record<HighlightColorKey, Highlight[]> = { yellow: [], blue: [], green: [], pink: [] };
+    for (const h of highlights) byColor[h.color].push(h);
+    const greenCards = flashcards.filter((f) => f.source_highlight_id);
+
+    if (highlights.length === 0 && notes.length === 0 && greenCards.length === 0) {
+      showToast('Add some highlights or notes first — nothing to build a study guide from yet.');
+      return;
+    }
+
+    const formatHighlights = (list: Highlight[]) =>
+      list.sort((a, b) => a.page - b.page).map((h) => `Page ${h.page}: ${h.selected_text}`).join('\n');
+    const formatNotes = () =>
+      notes.map((n) => `${n.title}:\n${n.content_markdown}`).join('\n\n');
+    const formatCards = () =>
+      greenCards.map((f) => `Q: ${f.front}\nA: ${f.back}`).join('\n\n');
+
+    const parts: string[] = [];
+    if (byColor.yellow.length) parts.push(`--- KEY CONCEPTS (yellow) ---\n${formatHighlights(byColor.yellow)}`);
+    if (notes.length) parts.push(`--- NOTES ---\n${formatNotes()}`);
+    if (byColor.blue.length) parts.push(`--- REVISIT (blue) ---\n${formatHighlights(byColor.blue)}`);
+    if (byColor.pink.length) parts.push(`--- QUOTES (pink) ---\n${formatHighlights(byColor.pink)}`);
+    if (greenCards.length) parts.push(`--- FLASHCARDS ---\n${formatCards()}`);
+
+    const pdf = pdfs.find((p) => p.id === pdfId);
+    const filename = pdf?.filename ?? 'this document';
+
+    setStudyGuide(null);
+    setIsGeneratingStudyGuide(true);
+    try {
+      const response = await callAI([
+        { role: 'system', content: STUDY_GUIDE_SYSTEM },
+        {
+          role: 'user',
+          content:
+            `Build a study guide for "${filename}" from my annotation data below. Use these ` +
+            `Markdown sections, in this order, skipping any with no matching data:\n\n${STUDY_GUIDE_SECTIONS}\n\n` +
+            parts.join('\n\n'),
+        },
+      ]);
+      setStudyGuide(response);
+    } catch (err) {
+      console.error('[study-guide] Failed:', err);
+      showToast(err instanceof Error ? err.message : 'Study guide generation failed');
+      clearStudyGuide();
+    } finally {
+      setIsGeneratingStudyGuide(false);
+    }
+  }, [isAuthenticated, requireAuth, user, showPaywall, highlights, notes, flashcards, pdfs, pdfId, setStudyGuide, setIsGeneratingStudyGuide, clearStudyGuide, showToast]);
+
+  // ── Cross-document compare (Pro) ──────────────────────────────────────────
+  const handleOpenComparePicker = useCallback(() => {
+    if (!isAuthenticated) return requireAuth('Sign in to compare documents', () => handleOpenComparePicker());
+    if (user?.tier !== 'pro') {
+      showPaywall('compare_requires_pro');
+      return;
+    }
+    setComparePickerOpen(true);
+  }, [isAuthenticated, requireAuth, user, showPaywall, setComparePickerOpen]);
+
+  const handleRunCompare = useCallback(async (targetPdfId: string) => {
+    setCompareResult(targetPdfId, null);
+    setIsComparing(true);
+    try {
+      const [jsonA, jsonB] = await Promise.all([
+        invoke<string>('get_chunks_for_pdf', { pdfId }),
+        invoke<string>('get_chunks_for_pdf', { pdfId: targetPdfId }),
+      ]);
+      const chunksA: PdfChunk[] = JSON.parse(jsonA);
+      const chunksB: PdfChunk[] = JSON.parse(jsonB);
+
+      if (chunksA.length === 0 || chunksB.length === 0) {
+        showToast("One of these documents hasn't finished processing yet.");
+        clearCompare();
+        return;
+      }
+
+      const filenameA = pdfs.find((p) => p.id === pdfId)?.filename ?? 'Document A';
+      const filenameB = pdfs.find((p) => p.id === targetPdfId)?.filename ?? 'Document B';
+
+      const response = await callAI([
+        { role: 'system', content: COMPARE_SYSTEM },
+        {
+          role: 'user',
+          content:
+            `Compare "${filenameA}" and "${filenameB}" using the excerpts below. Structure your ` +
+            `response with these Markdown headings:\n\n## Points of Agreement\n## Notable Differences\n` +
+            `## Unique to "${filenameA}"\n## Unique to "${filenameB}"\n\n` +
+            `--- ${filenameA} (excerpt) ---\n${buildCompareExcerpt(chunksA)}\n\n` +
+            `--- ${filenameB} (excerpt) ---\n${buildCompareExcerpt(chunksB)}`,
+        },
+      ]);
+      setCompareResult(targetPdfId, response);
+    } catch (err) {
+      console.error('[compare] Failed:', err);
+      showToast(err instanceof Error ? err.message : 'Comparison failed');
+      clearCompare();
+    } finally {
+      setIsComparing(false);
+    }
+  }, [pdfId, pdfs, setCompareResult, setIsComparing, clearCompare, showToast]);
 
   const handleGenerateFlashcards = useCallback(async () => {
     if (!isAuthenticated) return requireAuth('Sign in to generate flashcards', () => handleGenerateFlashcards());
@@ -2083,7 +2259,10 @@ export function PdfViewer({ filePath, pdfId }: Props) {
               setTrashPos(null);
             }}
             onExportPdf={() => setExportDialogOpen(true)}
+            onGenerateStudyGuide={handleGenerateStudyGuide}
+            onOpenComparePicker={handleOpenComparePicker}
           />
+          <ComparePickerModal onSelect={handleRunCompare} />
         </div>
       </div>
 
