@@ -63,6 +63,11 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Pagedge ${{ github.ref_name }}'
           releaseBody: 'See the assets below to download and install this version.'
+          # Draft on purpose - gives a chance to review before it goes live.
+          # NOTE: the in-app updater endpoint points at GitHub's
+          # ".../releases/latest/download/latest.json" alias, which only
+          # resolves once a release is published - the app won't see this
+          # version until the draft is manually published.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
