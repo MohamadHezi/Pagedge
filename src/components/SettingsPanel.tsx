@@ -5,6 +5,7 @@ import { useStore } from '../store';
 import { startProCheckout, openBillingPortal } from '../services/stripeService';
 import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
 import { FREE_TIER_PDF_LIMIT } from '../store';
+import type { SettingsTab } from '../types';
 
 const PROVIDER_URLS: Record<string, string> = {
   ollama:      'http://localhost:11434/v1',
@@ -25,7 +26,6 @@ const PROVIDERS = [
 ];
 
 type TestState = 'idle' | 'testing' | 'ok' | 'error';
-type SettingsTab = 'account' | 'editor' | 'data';
 
 function formatRelativeTime(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
@@ -42,7 +42,7 @@ function formatRelativeTime(iso: string): string {
 export function SettingsPanel() {
   const {
     isAuthenticated, requireAuth,
-    settingsPanelOpen, setSettingsPanelOpen,
+    settingsPanelOpen, setSettingsPanelOpen, settingsInitialTab,
     aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
     editorFontSize, editorLineWrap, setUiPrefs,
@@ -75,7 +75,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     if (!settingsPanelOpen) return;
-    setActiveTab('account');
+    setActiveTab(settingsInitialTab);
     setProvider(aiProvider);
     setModel(aiModel);
     setBaseUrl(aiBaseUrl);
@@ -89,7 +89,7 @@ export function SettingsPanel() {
     // Reset any unsaved live-preview CSS var back to the persisted value
     // so a prior unsaved drag doesn't leak into a fresh panel open.
     document.documentElement.style.setProperty('--note-font-size', `${editorFontSize}px`);
-  }, [settingsPanelOpen, aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider, editorFontSize, editorLineWrap]);
+  }, [settingsPanelOpen, settingsInitialTab, aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider, editorFontSize, editorLineWrap]);
 
   const handleProviderChange = (p: string) => {
     setProvider(p);

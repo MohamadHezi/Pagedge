@@ -24,8 +24,26 @@ export function LibrarySidebar() {
 
   const [isImporting, setIsImporting] = useState(false);
   const [newEntryMenuOpen, setNewEntryMenuOpen] = useState(false);
-  const [notesSectionExpanded, setNotesSectionExpanded] = useState(false);
-  const [notesSectionLoaded, setNotesSectionLoaded] = useState(false);
+  const [notesSectionExpanded, setNotesSectionExpanded] = useState(true);
+  const [librarySectionExpanded, setLibrarySectionExpanded] = useState(true);
+  const [syncedSectionExpanded, setSyncedSectionExpanded] = useState(true);
+  const [quickViewsSectionExpanded, setQuickViewsSectionExpanded] = useState(true);
+
+  // Shared props for a nav-section-header that toggles a collapsible body —
+  // same accordion look/behavior across Notes, Library, Synced Elsewhere, Quick Views.
+  const collapsibleHeaderProps = (expanded: boolean, setExpanded: React.Dispatch<React.SetStateAction<boolean>>) => ({
+    className: "nav-section-header nav-section-header--toggle",
+    onClick: () => setExpanded((v) => !v),
+    role: "button" as const,
+    tabIndex: 0,
+    "aria-expanded": expanded,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        setExpanded((v) => !v);
+      }
+    },
+  });
 
   // ── Quick Views (Recent / Citations & Quotes) ───────────────────────────────
   const [activeQuickView, setActiveQuickView] = useState<QuickView | null>(null);
@@ -185,6 +203,13 @@ export function LibrarySidebar() {
     document.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
 
+  // Load standalone notes up front so the Notes section renders its list
+  // immediately, same as Library — no lazy/collapsed load-on-expand.
+  useEffect(() => {
+    loadStandaloneNotes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Dismiss confirm state on Escape
   useEffect(() => {
     if (!confirmDeleteFolderId) return;
@@ -233,15 +258,6 @@ export function LibrarySidebar() {
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [newEntryMenuOpen]);
-
-  const handleToggleNotesSection = () => {
-    const next = !notesSectionExpanded;
-    setNotesSectionExpanded(next);
-    if (next && !notesSectionLoaded) {
-      setNotesSectionLoaded(true);
-      loadStandaloneNotes();
-    }
-  };
 
   const startRename = (e: React.MouseEvent, id: string, currentName: string) => {
     e.stopPropagation();
@@ -664,18 +680,26 @@ export function LibrarySidebar() {
 
         {/* Section 0b — NOTES (standalone notes, not tied to any PDF) */}
         <div className="nav-section">
-          <button
-            className="nav-section-header nav-section-header--toggle"
-            onClick={handleToggleNotesSection}
-            aria-expanded={notesSectionExpanded}
-          >
-            <span className={`outline-section-chevron${notesSectionExpanded ? " outline-section-chevron--expanded" : ""}`}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="9 18 15 12 9 6" />
-              </svg>
-            </span>
+          <div {...collapsibleHeaderProps(notesSectionExpanded, setNotesSectionExpanded)}>
+            <svg className="nav-section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 4h16v16H4z" />
+              <path d="M8 9h8M8 13h8M8 17h5" />
+            </svg>
             <span className="nav-section-title">Notes</span>
-          </button>
+            <button
+              className="collection-add-root-btn"
+              title="New note"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleNewStandaloneNote();
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+          </div>
           <div className={`outline-collapse${notesSectionExpanded ? " outline-collapse--expanded" : ""}`}>
             <div className="outline-collapse-inner">
               {standaloneNotes.length === 0 ? (
@@ -706,7 +730,7 @@ export function LibrarySidebar() {
         {/* Section 1 — LIBRARY (nested collections + documents, or a flat
             quick-view list when Recent/Citations & Quotes is active) */}
         <div className="nav-section">
-          <div className="nav-section-header">
+          <div {...collapsibleHeaderProps(librarySectionExpanded, setLibrarySectionExpanded)}>
             <svg className="nav-section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
@@ -718,12 +742,22 @@ export function LibrarySidebar() {
               <button
                 className="nav-quickview-clear"
                 title="Clear filter"
-                onClick={() => setActiveQuickView(null)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveQuickView(null);
+                }}
               >
                 Clear
               </button>
             ) : (
-              <button className="collection-add-root-btn" title="New collection" onClick={startCreateRoot}>
+              <button
+                className="collection-add-root-btn"
+                title="New collection"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startCreateRoot();
+                }}
+              >
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="12" y1="5" x2="12" y2="19" />
                   <line x1="5" y1="12" x2="19" y2="12" />
@@ -732,90 +766,98 @@ export function LibrarySidebar() {
             )}
           </div>
 
-          {activeQuickView ? (
-            activeQuickView === "quotes" && quotesLoading ? (
-              <p className="sidebar-empty">Loading…</p>
-            ) : quickViewPdfs.length === 0 ? (
-              <p className="sidebar-empty">
-                {activeQuickView === "recent" ? "No documents opened yet" : "No pink (quote) highlights yet"}
-              </p>
-            ) : (
-              <ul className="pdf-list">
-                {quickViewPdfs.map((pdf) => renderPdfRow(pdf, 0))}
-              </ul>
-            )
-          ) : rootNodes.length === 0 && creatingFor !== "root" ? (
-            <p className="sidebar-empty">Drop a PDF to begin</p>
-          ) : (
-            <ul
-              className={`pdf-list collection-root-drop${rootDragOver ? " collection-root-drop--dragover" : ""}`}
-              onDragOver={(e) => {
-                if (!e.dataTransfer.types.includes(PDF_DRAG_MIME) && !e.dataTransfer.types.includes(FOLDER_DRAG_MIME)) return;
-                e.preventDefault();
-                setRootDragOver(true);
-              }}
-              onDragLeave={() => setRootDragOver(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setRootDragOver(false);
-                handleDropOnRoot(e);
-              }}
-            >
-              {rootNodes.map((n) => (n.kind === "folder" ? renderFolderNode(n.folder, 0) : renderPdfRow(n.pdf, 0)))}
-              {creatingFor === "root" && (
-                <li className="collection-new-input-wrap" style={{ paddingLeft: "28px" }}>
-                  <input
-                    className="collection-new-input"
-                    autoFocus
-                    value={newFolderName}
-                    placeholder="Collection name"
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitCreateFolder("root");
-                      if (e.key === "Escape") cancelCreateFolder();
-                    }}
-                    onBlur={() => commitCreateFolder("root")}
-                  />
-                </li>
+          <div className={`outline-collapse${librarySectionExpanded ? " outline-collapse--expanded" : ""}`}>
+            <div className="outline-collapse-inner">
+              {activeQuickView ? (
+                activeQuickView === "quotes" && quotesLoading ? (
+                  <p className="sidebar-empty">Loading…</p>
+                ) : quickViewPdfs.length === 0 ? (
+                  <p className="sidebar-empty">
+                    {activeQuickView === "recent" ? "No documents opened yet" : "No pink (quote) highlights yet"}
+                  </p>
+                ) : (
+                  <ul className="pdf-list">
+                    {quickViewPdfs.map((pdf) => renderPdfRow(pdf, 0))}
+                  </ul>
+                )
+              ) : rootNodes.length === 0 && creatingFor !== "root" ? (
+                <p className="sidebar-empty">Drop a PDF to begin</p>
+              ) : (
+                <ul
+                  className={`pdf-list collection-root-drop${rootDragOver ? " collection-root-drop--dragover" : ""}`}
+                  onDragOver={(e) => {
+                    if (!e.dataTransfer.types.includes(PDF_DRAG_MIME) && !e.dataTransfer.types.includes(FOLDER_DRAG_MIME)) return;
+                    e.preventDefault();
+                    setRootDragOver(true);
+                  }}
+                  onDragLeave={() => setRootDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setRootDragOver(false);
+                    handleDropOnRoot(e);
+                  }}
+                >
+                  {rootNodes.map((n) => (n.kind === "folder" ? renderFolderNode(n.folder, 0) : renderPdfRow(n.pdf, 0)))}
+                  {creatingFor === "root" && (
+                    <li className="collection-new-input-wrap" style={{ paddingLeft: "28px" }}>
+                      <input
+                        className="collection-new-input"
+                        autoFocus
+                        value={newFolderName}
+                        placeholder="Collection name"
+                        onChange={(e) => setNewFolderName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitCreateFolder("root");
+                          if (e.key === "Escape") cancelCreateFolder();
+                        }}
+                        onBlur={() => commitCreateFolder("root")}
+                      />
+                    </li>
+                  )}
+                </ul>
               )}
-            </ul>
-          )}
+            </div>
+          </div>
         </div>
 
         {/* Section 2b — SYNCED ELSEWHERE — PDFs known to the account (per the
             /sync/manifest) but not present in this device's local library. */}
         {remoteOnlyPdfs.length > 0 && (
           <div className="nav-section">
-            <div className="nav-section-header">
+            <div {...collapsibleHeaderProps(syncedSectionExpanded, setSyncedSectionExpanded)}>
               <svg className="nav-section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
               </svg>
               <span className="nav-section-title">Synced Elsewhere</span>
             </div>
-            <ul className="pdf-list">
-              {remoteOnlyPdfs.map((rp) => {
-                const total = rp.counts.highlights + rp.counts.notes + rp.counts.flashcards;
-                return (
-                  <li
-                    key={rp.content_hash}
-                    className="pdf-item pdf-item--remote"
-                    title={`${rp.display_name ?? "Untitled PDF"} — synced from another device. Add this exact file locally to import it.`}
-                  >
-                    <svg className="pdf-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
-                    </svg>
-                    <span className="pdf-name">{rp.display_name ?? "Untitled PDF"}</span>
-                    <span className="pdf-remote-badge">{total}</span>
-                  </li>
-                );
-              })}
-            </ul>
+            <div className={`outline-collapse${syncedSectionExpanded ? " outline-collapse--expanded" : ""}`}>
+              <div className="outline-collapse-inner">
+                <ul className="pdf-list">
+                  {remoteOnlyPdfs.map((rp) => {
+                    const total = rp.counts.highlights + rp.counts.notes + rp.counts.flashcards;
+                    return (
+                      <li
+                        key={rp.content_hash}
+                        className="pdf-item pdf-item--remote"
+                        title={`${rp.display_name ?? "Untitled PDF"} — synced from another device. Add this exact file locally to import it.`}
+                      >
+                        <svg className="pdf-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
+                        </svg>
+                        <span className="pdf-name">{rp.display_name ?? "Untitled PDF"}</span>
+                        <span className="pdf-remote-badge">{total}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </div>
           </div>
         )}
 
         {/* Section 3 — QUICK VIEWS */}
         <div className="nav-section">
-          <div className="nav-section-header">
+          <div {...collapsibleHeaderProps(quickViewsSectionExpanded, setQuickViewsSectionExpanded)}>
             <svg className="nav-section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
               <circle cx="12" cy="12" r="3" />
@@ -823,49 +865,53 @@ export function LibrarySidebar() {
             <span className="nav-section-title">Quick Views</span>
           </div>
 
-          <button
-            className={`nav-tree-item${activeQuickView === "recent" ? " nav-tree-item--active" : ""}`}
-            title="Recently opened documents"
-            onClick={handleRecentClick}
-          >
-            <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-            <span className="nav-tree-item-label">Recent</span>
-          </button>
+          <div className={`outline-collapse${quickViewsSectionExpanded ? " outline-collapse--expanded" : ""}`}>
+            <div className="outline-collapse-inner">
+              <button
+                className={`nav-tree-item${activeQuickView === "recent" ? " nav-tree-item--active" : ""}`}
+                title="Recently opened documents"
+                onClick={handleRecentClick}
+              >
+                <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+                <span className="nav-tree-item-label">Recent</span>
+              </button>
 
-          <button className="nav-tree-item" title="Documents with flashcard highlights" onClick={handleFlashcardDocumentsClick}>
-            <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="6" width="20" height="14" rx="2" />
-              <path d="M16 6V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
-            </svg>
-            <span className="nav-tree-item-label">Flashcard Documents</span>
-          </button>
+              <button className="nav-tree-item" title="Documents with flashcard highlights" onClick={handleFlashcardDocumentsClick}>
+                <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="6" width="20" height="14" rx="2" />
+                  <path d="M16 6V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+                </svg>
+                <span className="nav-tree-item-label">Flashcard Documents</span>
+              </button>
 
-          <button
-            className={`nav-tree-item${activeQuickView === "quotes" ? " nav-tree-item--active" : ""}`}
-            title="Passages marked as quotes or citations"
-            onClick={handleQuotesClick}
-          >
-            <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z" />
-              <path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z" />
-            </svg>
-            <span className="nav-tree-item-label">Citations &amp; Quotes</span>
-          </button>
+              <button
+                className={`nav-tree-item${activeQuickView === "quotes" ? " nav-tree-item--active" : ""}`}
+                title="Passages marked as quotes or citations"
+                onClick={handleQuotesClick}
+              >
+                <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z" />
+                  <path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z" />
+                </svg>
+                <span className="nav-tree-item-label">Citations &amp; Quotes</span>
+              </button>
 
-          <button
-            className={`nav-tree-item${trashViewOpen ? " nav-tree-item--active" : ""}`}
-            title="Trashed documents"
-            onClick={handleTrashClick}
-          >
-            <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="3 6 5 6 21 6" />
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-            </svg>
-            <span className="nav-tree-item-label">Trash</span>
-          </button>
+              <button
+                className={`nav-tree-item${trashViewOpen ? " nav-tree-item--active" : ""}`}
+                title="Trashed documents"
+                onClick={handleTrashClick}
+              >
+                <svg className="nav-tree-item-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                </svg>
+                <span className="nav-tree-item-label">Trash</span>
+              </button>
+            </div>
+          </div>
         </div>
 
       </div>{/* end nav-scroll */}

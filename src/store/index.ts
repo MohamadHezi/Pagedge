@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, GlobalChatMessage, Drawing, DrawToolType, TextBox, Flashcard, Deck, ReviewFilter, OutlineItem, SketchStroke } from "../types";
+import type { Pdf, Folder, Highlight, LensKey, Note, IngestionStatus, ChatMessage, GlobalChatMessage, Drawing, DrawToolType, TextBox, Flashcard, Deck, ReviewFilter, OutlineItem, SketchStroke, SettingsTab } from "../types";
 import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
 import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending, clearPullCursor } from "../services/syncService";
@@ -201,7 +201,8 @@ interface AppState {
 
   // ── Settings panel ────────────────────────────────────────────────────────────
   settingsPanelOpen: boolean;
-  setSettingsPanelOpen: (open: boolean) => void;
+  settingsInitialTab: SettingsTab;
+  setSettingsPanelOpen: (open: boolean, tab?: SettingsTab) => void;
 
   // ── Feedback ──────────────────────────────────────────────────────────────────
   feedbackModalOpen: boolean;
@@ -848,7 +849,11 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ── Settings panel ────────────────────────────────────────────────────────────
   settingsPanelOpen: false,
-  setSettingsPanelOpen: (open) => set({ settingsPanelOpen: open }),
+  settingsInitialTab: 'account',
+  setSettingsPanelOpen: (open, tab) => set((state) => ({
+    settingsPanelOpen: open,
+    settingsInitialTab: tab ?? state.settingsInitialTab,
+  })),
 
   // ── Feedback ──────────────────────────────────────────────────────────────────
   feedbackModalOpen: false,

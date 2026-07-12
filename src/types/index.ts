@@ -181,6 +181,8 @@ export interface PdfChunk {
   content: string;
 }
 
+export type SettingsTab = 'account' | 'editor' | 'data';
+
 // ── Graph View (knowledge map) ─────────────────────────────────────────────
 
 export type GraphNodeType = 'pdf' | 'note' | 'flashcard' | 'tag';
