@@ -56,9 +56,18 @@ pub fn open_file_dialog(app: AppHandle) -> Result<Vec<String>, String> {
     }
 }
 
+// Returns a raw binary IPC response instead of Vec<u8>/a base64 string.
+// Tauri would otherwise serialize a Vec<u8> as a JSON array of numbers
+// (~2-4 chars/byte) or require the frontend to text-decode base64 via
+// atob()+a per-character loop — both cost real time and memory for a
+// multi-MB PDF, and the atob approach was severe enough (two copies of the
+// file loading concurrently: viewer + ingestion) to OOM-crash the webview
+// on a 400-page document. tauri::ipc::Response ships the bytes straight
+// into a JS ArrayBuffer with zero text encoding at any point.
 #[tauri::command]
-pub fn read_file(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| e.to_string())
+pub fn read_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]

@@ -18,6 +18,7 @@ import { TextBoxLayer, DEFAULT_W, DEFAULT_H } from "./TextBoxLayer";
 import { callAI } from "../services/aiService";
 import { generateFlashcardsForHighlights } from "../services/flashcardService";
 import { ensureOutline } from "../services/outlineService";
+import { readPdfBytes } from "../services/pdfBytesCache";
 import { pdfPointToCanvasPixel } from "../lib/coords";
 import { drawingToSketchStroke, sketchStrokeToDrawing } from "../lib/drawingConversion";
 
@@ -942,6 +943,11 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       estimatedPageHeightRef.current = 0;
       renderWindowRef.current = { start: 0, end: -1 };
       setRenderWindow({ start: 0, end: -1 });
+      // Must also reset prevWindowRef — otherwise if the new document's
+      // initial window happens to equal the previous document's last window
+      // (e.g. both opened at page 1, so both compute {0,3}), the window-diff
+      // effect sees "no change" and renders nothing for the new document at all.
+      prevWindowRef.current = { start: 0, end: -1 };
       setPicker(null);
       setHlPopup(null);
       setHlPicker(null);
@@ -961,10 +967,13 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       setOutline([]);
 
       try {
-        const bytes = await invoke<number[]>("read_file", { path: filePath });
+        // readPdfBytes dedupes concurrent read_file calls for the same path
+        // — ingestion (triggered right after import) and this load can
+        // otherwise both read+transfer the same large file at once.
+        const bytes = await readPdfBytes(filePath);
         if (cancelled) return;
 
-        const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(bytes) });
+        const loadingTask = pdfjsLib.getDocument({ data: bytes });
         const doc = await loadingTask.promise;
         if (cancelled) { doc.cleanup(); return; }
 
@@ -1151,10 +1160,34 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     }
   }, []);
 
+  // ── Render newly-active pages, cancel newly-inactive ones ─────────────────
+  // Driven by an effect (not a mount/unmount ref callback) so it runs after
+  // React's own commit — the same proven pattern the original single-effect
+  // renderAll used, and unlike a ref callback it isn't sensitive to React 18
+  // StrictMode's dev-only double-invoke of ref attachment on first mount.
+  const prevWindowRef = useRef<{ start: number; end: number }>({ start: 0, end: -1 });
+  useEffect(() => {
+    if (numPages === 0) return;
+    const { start, end } = renderWindow;
+    const prev = prevWindowRef.current;
+    prevWindowRef.current = { start, end };
+
+    for (let i = prev.start; i <= prev.end; i++) {
+      if (i < start || i > end) cancelPage(i);
+    }
+    for (let i = start; i <= end; i++) {
+      if (i < prev.start || i > prev.end) {
+        const gen = (pageGenRef.current[i] ?? 0) + 1;
+        pageGenRef.current[i] = gen;
+        renderPage(i, gen);
+      }
+    }
+  }, [renderWindow, numPages, cancelPage, renderPage]);
+
   // ── Re-render mounted pages, and invalidate stale cache for unmounted
   // pages, when zoom changes. Canvases don't unmount just because scale
-  // changed, so the mount-triggered callback ref (below) won't refire —
-  // this effect is what actually redraws the (small) mounted window.
+  // changed, so the window-diff effect above won't refire — this effect is
+  // what actually redraws the (small) mounted window.
   useEffect(() => {
     const prevScale = prevScaleRef.current;
     prevScaleRef.current = scale;
@@ -1179,30 +1212,6 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     // Bump so placeholder heights (derived from the refs above) re-apply.
     setViewportVersion((v) => v + 1);
   }, [scale, numPages, renderPage]);
-
-  // Stable per-page ref callbacks for `.page-canvas`. A plain inline arrow
-  // function would get a new identity every render, and React detaches +
-  // reattaches a ref whose identity changes even when the underlying DOM
-  // node hasn't — which would fire renderPage/cancelPage on every unrelated
-  // re-render, not just real mount/unmount. Caching one function per page
-  // index keeps the ref identity stable across re-renders.
-  const pageCanvasRefCallbacks = useRef<Map<number, (el: HTMLCanvasElement | null) => void>>(new Map());
-  const getPageCanvasRef = useCallback((i: number) => {
-    let cb = pageCanvasRefCallbacks.current.get(i);
-    if (!cb) {
-      cb = (el) => {
-        if (el) {
-          const gen = (pageGenRef.current[i] ?? 0) + 1;
-          pageGenRef.current[i] = gen;
-          renderPage(i, gen);
-        } else {
-          cancelPage(i);
-        }
-      };
-      pageCanvasRefCallbacks.current.set(i, cb);
-    }
-    return cb;
-  }, [renderPage, cancelPage]);
 
   // ── Redraw highlights when they change or the active lens switches ────────
   useEffect(() => {
@@ -2356,10 +2365,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
               >
                 {isActive && (
                   <>
-                    <canvas
-                      className="page-canvas"
-                      ref={getPageCanvasRef(i)}
-                    />
+                    <canvas className="page-canvas" />
                     <canvas
                       className="hl-canvas"
                       ref={(el) => { hlCanvasRefs.current[i] = el; }}

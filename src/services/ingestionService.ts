@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import * as pdfjsLib from 'pdfjs-dist';
 import { useStore } from '../store';
 import type { PageText } from '../types';
+import { readPdfBytes } from './pdfBytesCache';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -9,6 +10,16 @@ const CHUNK_CHARS = 2000;   // ~500 tokens at 4 chars/token
 const OVERLAP_CHARS = 200;  // ~50 tokens
 const MIN_CHARS = 50;
 const EMBED_BATCH = 5;
+// How often (in pages) the extraction/chunking loops below yield to the
+// browser. Neither loop is expensive per page, but hundreds of pages
+// chained without a real yield point (a setTimeout macrotask, not just an
+// awaited microtask that resolves instantly) can monopolize the main
+// thread long enough that the whole app stops responding to clicks.
+const YIELD_EVERY_N_PAGES = 15;
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 // ── PDF.js text extraction ────────────────────────────────────────────────────
 // Replaces the Rust/lopdf extract_pdf_text command: lopdf silently returns empty
@@ -20,11 +31,12 @@ async function extractTextWithPdfJs(filepath: string): Promise<PageText[]> {
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   }
 
-  // Use the same read_file Rust command the PDF viewer uses — this reads raw
-  // bytes without going through the asset.localhost custom protocol, which the
-  // PDF.js worker can't access.
-  const bytes = await invoke<number[]>('read_file', { path: filepath });
-  const data = new Uint8Array(bytes);
+  // readPdfBytes dedupes concurrent read_file calls for the same path — a
+  // freshly-imported PDF opened right away would otherwise have the viewer
+  // and this ingestion pass both read+transfer the whole (possibly large)
+  // file at once. Reads raw bytes rather than going through the
+  // asset.localhost custom protocol, which the PDF.js worker can't access.
+  const data = await readPdfBytes(filepath);
 
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   console.log('[ingest] PDF.js loaded', pdf.numPages, 'pages from', filepath);
@@ -42,6 +54,8 @@ async function extractTextWithPdfJs(filepath: string): Promise<PageText[]> {
       })
       .join('');
     pages.push({ page: i, text });
+
+    if (i % YIELD_EVERY_N_PAGES === 0) await yieldToMainThread();
   }
 
   const totalChars = pages.reduce((s, p) => s + p.text.length, 0);
@@ -63,13 +77,20 @@ function lastSentenceBoundary(text: string, maxLen: number): number {
     slice.lastIndexOf('? '),
     slice.lastIndexOf('! '),
   );
-  return boundary > MIN_CHARS ? boundary + 2 : maxLen;
+  // Must return strictly more than OVERLAP_CHARS: the caller does
+  // `current.slice(cutAt - OVERLAP_CHARS)` to advance past this cut. If a
+  // sentence boundary lands at or before OVERLAP_CHARS, that slice clamps
+  // to 0 and `current` never shrinks — the caller's while loop then spins
+  // forever re-chunking the exact same text (this was a real, previously
+  // untriggered infinite loop that froze the app on a large document).
+  return boundary > OVERLAP_CHARS ? boundary + 2 : maxLen;
 }
 
-function chunkPageTexts(pageTexts: PageText[]): TextChunk[] {
+async function chunkPageTexts(pageTexts: PageText[]): Promise<TextChunk[]> {
   const result: TextChunk[] = [];
 
-  for (const { page, text } of pageTexts) {
+  for (let pageIdx = 0; pageIdx < pageTexts.length; pageIdx++) {
+    const { page, text } = pageTexts[pageIdx];
     if (!text.trim()) continue;
 
     const paragraphs = text
@@ -87,7 +108,15 @@ function chunkPageTexts(pageTexts: PageText[]): TextChunk[] {
         const tail = current.slice(-OVERLAP_CHARS);
         current = tail ? `${tail}\n\n${para}` : para;
 
+        let guard = 0;
         while (current.length > CHUNK_CHARS) {
+          // Defensive cap — lastSentenceBoundary guarantees forward progress,
+          // but this stops any future regression from hanging the app again
+          // instead of silently looping forever.
+          if (++guard > 10000) {
+            console.error('[ingest] chunking loop exceeded guard limit, aborting this paragraph run', { page });
+            break;
+          }
           const cutAt = lastSentenceBoundary(current, CHUNK_CHARS);
           result.push({ page, content: current.slice(0, cutAt).trim() });
           current = current.slice(Math.max(0, cutAt - OVERLAP_CHARS)).trim();
@@ -96,6 +125,8 @@ function chunkPageTexts(pageTexts: PageText[]): TextChunk[] {
     }
 
     if (current.length >= MIN_CHARS) result.push({ page, content: current });
+
+    if ((pageIdx + 1) % YIELD_EVERY_N_PAGES === 0) await yieldToMainThread();
   }
 
   return result;
@@ -261,7 +292,7 @@ export async function ingestPdf(pdfId: string, filepath: string): Promise<void> 
     const pageTexts = await extractTextWithPdfJs(filepath);
 
     // 2. Chunk
-    const chunks = chunkPageTexts(pageTexts);
+    const chunks = await chunkPageTexts(pageTexts);
     console.log('[ingest] produced', chunks.length, 'chunks for pdfId', pdfId);
 
     if (chunks.length === 0) {
@@ -275,7 +306,10 @@ export async function ingestPdf(pdfId: string, filepath: string): Promise<void> 
     await invoke('delete_chunks_for_pdf', { pdfId });
 
     // 4. Embed in batches of EMBED_BATCH, store as we go
+    const totalBatches = Math.ceil(chunks.length / EMBED_BATCH);
+    const embedStart = performance.now();
     for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
+      const batchStart = performance.now();
       const batch = chunks.slice(i, i + EMBED_BATCH);
       const embeddings = await embedBatch(batch.map(c => c.content));
 
@@ -289,6 +323,14 @@ export async function ingestPdf(pdfId: string, filepath: string): Promise<void> 
       }));
 
       await invoke('store_chunks', { chunks: chunkInputs });
+
+      const batchNum = i / EMBED_BATCH + 1;
+      if (batchNum === 1 || batchNum % 10 === 0 || batchNum === totalBatches) {
+        console.log(
+          `[ingest] embed batch ${batchNum}/${totalBatches} took ${(performance.now() - batchStart).toFixed(0)}ms`,
+          `(total elapsed ${(performance.now() - embedStart).toFixed(0)}ms)`,
+        );
+      }
     }
 
     // 5. Mark as ingested
