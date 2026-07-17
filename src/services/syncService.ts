@@ -185,16 +185,19 @@ function fromServerFlashcard(row: ServerFlashcard, pdfId: string): Flashcard {
 }
 
 // ── Auth/tier gate ──────────────────────────────────────────────────────────
-// Mirrors aiService.ts's callProxy pre-check: paywall-gate before any
-// network call, never before a local SQLite read/write.
+// Every caller here (schedulePush, pull-on-open, foreground refresh) is an
+// automatic background operation, not a user-initiated action — so this is
+// a silent skip, not a paywall trigger. Same reasoning as
+// pullAllOnForeground/checkPendingAnnotationsForHash's own no-ops below.
+// If an explicit user-facing "sync now"/"enable sync" action is ever added,
+// have that call site show the paywall itself rather than reintroducing it here.
 function requireProOrThrow(): void {
-  const { user, showPaywall } = useStore.getState();
+  const { user } = useStore.getState();
   if (!user) {
     useStore.getState().clearUser();
     throw new Error('Not authenticated');
   }
   if (user.tier === 'free') {
-    showPaywall('sync_requires_pro');
     throw new Error('sync_requires_pro');
   }
 }
