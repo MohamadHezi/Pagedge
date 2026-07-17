@@ -444,9 +444,6 @@ export function LibrarySidebar() {
         {!isRenaming && (
           <span className="pdf-item-right">
             <span className="pdf-status">
-              {status === "indexing" && (
-                <span className="pdf-status-spinner" title="Indexing…" />
-              )}
               {status === "done" && (
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="pdf-status-done" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
