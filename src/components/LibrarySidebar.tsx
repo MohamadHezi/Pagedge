@@ -9,8 +9,9 @@ import type { Flashcard, Highlight, Pdf, Folder } from "../types";
 type QuickView = "recent" | "quotes";
 type LibraryNode = { kind: "folder"; folder: Folder } | { kind: "pdf"; pdf: Pdf };
 
-const PDF_DRAG_MIME = "application/x-pagedge-pdf-id";
-const FOLDER_DRAG_MIME = "application/x-pagedge-folder-id";
+// Minimum pointer movement (px) before a mousedown-on-a-row counts as a drag
+// rather than a click. See beginRowDrag below.
+const DRAG_THRESHOLD = 5;
 
 export function LibrarySidebar() {
   const {
@@ -108,6 +109,11 @@ export function LibrarySidebar() {
   const skipBlurRef = useRef(false);
   const [draggingPdfId, setDraggingPdfId] = useState<string | null>(null);
   const [rootDragOver, setRootDragOver] = useState(false);
+  // Set right before mouseup when a real drag (past DRAG_THRESHOLD) just
+  // finished, so the row's own onClick (which still fires after mouseup)
+  // can skip acting on it — mirrors native HTML5 drag-and-drop's built-in
+  // suppression of click after an actual drag.
+  const justDraggedRef = useRef(false);
 
   // ── Collection (folder) interaction state ─────────────────────────────────
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
@@ -332,34 +338,79 @@ export function LibrarySidebar() {
     if (trimmed) await createFolder(trimmed, targetParentId);
   };
 
-  const handleDropOnFolder = (folder: Folder, e: React.DragEvent) => {
-    const pdfId = e.dataTransfer.getData(PDF_DRAG_MIME);
-    if (pdfId) {
-      movePdfToFolder(pdfId, folder.id);
-      return;
-    }
-    const draggedFolderId = e.dataTransfer.getData(FOLDER_DRAG_MIME);
-    if (!draggedFolderId || draggedFolderId === folder.id) return;
-    const draggedFolder = folders.find((f) => f.id === draggedFolderId);
-    if (!draggedFolder) return;
-    // Dropping a folder onto itself or one of its own descendants would
-    // create a cycle — refuse the move entirely.
-    if (isDescendantOf(folder.id, draggedFolderId)) return;
+  // Pointer-based replacement for native HTML5 drag-and-drop — Tauri's
+  // window.dragDropEnabled must be true for native OS file drops to work
+  // (see MainArea.tsx), which in turn disables the browser's own DragEvent/
+  // dataTransfer for page content, so sidebar reordering can't use it either.
+  // Tracks a drag with document-level mousemove/mouseup (same pattern as
+  // handleResizeStart above), hit-testing the element under the pointer via
+  // elementFromPoint + closest(...) instead of relying on dragover/drop
+  // event bubbling.
+  const beginRowDrag = useCallback((e: React.MouseEvent, kind: "pdf" | "folder", id: string) => {
+    if (e.button !== 0) return;
+    // Don't intercept mousedown on nested interactive controls (pin/delete/
+    // rename buttons, the chevron, rename inputs) — let them behave normally.
+    if ((e.target as HTMLElement).closest("button, input")) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let engaged = false;
 
-    // Dropping directly onto a folder always nests it inside — including
-    // when the two are already siblings — matching normal file-manager
-    // behavior. (Sibling reordering isn't a separate gesture right now.)
-    if (draggedFolder.parent_id !== folder.id) moveFolderToParent(draggedFolderId, folder.id);
-  };
+    const hitTest = (clientX: number, clientY: number) => {
+      const el = document.elementFromPoint(clientX, clientY);
+      const folderEl = el?.closest<HTMLElement>("[data-folder-id]") ?? null;
+      const targetFolderId = folderEl?.dataset.folderId ?? null;
+      const overRoot = !!el?.closest(".collection-root-drop");
+      return { targetFolderId, overRoot };
+    };
 
-  const handleDropOnRoot = (e: React.DragEvent) => {
-    const pdfId = e.dataTransfer.getData(PDF_DRAG_MIME);
-    if (pdfId) { movePdfToFolder(pdfId, null); return; }
-    const draggedFolderId = e.dataTransfer.getData(FOLDER_DRAG_MIME);
-    if (!draggedFolderId) return;
-    const draggedFolder = folders.find((f) => f.id === draggedFolderId);
-    if (draggedFolder && draggedFolder.parent_id !== null) moveFolderToParent(draggedFolderId, null);
-  };
+    const onMove = (ev: MouseEvent) => {
+      if (!engaged) {
+        if (Math.abs(ev.clientX - startX) < DRAG_THRESHOLD && Math.abs(ev.clientY - startY) < DRAG_THRESHOLD) return;
+        engaged = true;
+        document.body.style.userSelect = "none";
+        if (kind === "pdf") setDraggingPdfId(id); else setDraggingFolderId(id);
+      }
+      const { targetFolderId, overRoot } = hitTest(ev.clientX, ev.clientY);
+      setDragOverFolderId(targetFolderId && targetFolderId !== id ? targetFolderId : null);
+      setRootDragOver(!targetFolderId && overRoot);
+    };
+
+    const onUp = (ev: MouseEvent) => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+
+      if (engaged) {
+        justDraggedRef.current = true;
+        const { targetFolderId, overRoot } = hitTest(ev.clientX, ev.clientY);
+
+        if (kind === "pdf") {
+          if (targetFolderId) movePdfToFolder(id, targetFolderId);
+          else if (overRoot) movePdfToFolder(id, null);
+        } else if (targetFolderId && targetFolderId !== id) {
+          const draggedFolder = folders.find((f) => f.id === id);
+          // Refuse dropping a folder onto itself or one of its own
+          // descendants (would create a cycle). Dropping directly onto a
+          // folder always nests it inside, including when already siblings.
+          if (draggedFolder && !isDescendantOf(targetFolderId, id) && draggedFolder.parent_id !== targetFolderId) {
+            moveFolderToParent(id, targetFolderId);
+          }
+        } else if (overRoot) {
+          const draggedFolder = folders.find((f) => f.id === id);
+          if (draggedFolder && draggedFolder.parent_id !== null) moveFolderToParent(id, null);
+        }
+      }
+
+      setDraggingPdfId(null);
+      setDraggingFolderId(null);
+      setDragOverFolderId(null);
+      setRootDragOver(false);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [folders, isDescendantOf, movePdfToFolder, moveFolderToParent]);
 
   // ── Row renderers ─────────────────────────────────────────────────────────
   const renderPdfRow = (pdf: Pdf, depth: number) => {
@@ -377,18 +428,12 @@ export function LibrarySidebar() {
         ].filter(Boolean).join(" ")}
         style={depth > 0 ? { paddingLeft: `${28 + depth * 14}px` } : undefined}
         onClick={() => {
+          if (justDraggedRef.current) { justDraggedRef.current = false; return; }
           if (isRenaming) return;
           selectPdf(pdf.id);
         }}
         title={isRenaming ? undefined : pdf.filepath}
-        draggable={!isRenaming}
-        onDragStart={(e) => {
-          e.stopPropagation();
-          e.dataTransfer.setData(PDF_DRAG_MIME, pdf.id);
-          e.dataTransfer.effectAllowed = "move";
-          setDraggingPdfId(pdf.id);
-        }}
-        onDragEnd={() => setDraggingPdfId(null)}
+        onMouseDown={(e) => { if (!isRenaming) beginRowDrag(e, "pdf", pdf.id); }}
       >
         {/* File icon */}
         <svg className="pdf-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -499,28 +544,12 @@ export function LibrarySidebar() {
             draggingFolderId === folder.id ? "collection-row--dragging" : "",
           ].filter(Boolean).join(" ")}
           style={{ paddingLeft: `${28 + depth * 14}px` }}
-          draggable={!isRenaming && !isConfirming}
-          onClick={() => { if (!isRenaming && !isConfirming) toggleExpand(folder.id); }}
-          onDragStart={(e) => {
-            e.stopPropagation();
-            e.dataTransfer.setData(FOLDER_DRAG_MIME, folder.id);
-            e.dataTransfer.effectAllowed = "move";
-            setDraggingFolderId(folder.id);
+          data-folder-id={folder.id}
+          onClick={() => {
+            if (justDraggedRef.current) { justDraggedRef.current = false; return; }
+            if (!isRenaming && !isConfirming) toggleExpand(folder.id);
           }}
-          onDragEnd={() => setDraggingFolderId(null)}
-          onDragOver={(e) => {
-            if (!e.dataTransfer.types.includes(PDF_DRAG_MIME) && !e.dataTransfer.types.includes(FOLDER_DRAG_MIME)) return;
-            e.preventDefault();
-            e.stopPropagation();
-            setDragOverFolderId(folder.id);
-          }}
-          onDragLeave={() => setDragOverFolderId(null)}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setDragOverFolderId(null);
-            handleDropOnFolder(folder, e);
-          }}
+          onMouseDown={(e) => { if (!isRenaming && !isConfirming) beginRowDrag(e, "folder", folder.id); }}
         >
           {hasContents ? (
             <span
@@ -782,17 +811,6 @@ export function LibrarySidebar() {
               ) : (
                 <ul
                   className={`pdf-list collection-root-drop${rootDragOver ? " collection-root-drop--dragover" : ""}`}
-                  onDragOver={(e) => {
-                    if (!e.dataTransfer.types.includes(PDF_DRAG_MIME) && !e.dataTransfer.types.includes(FOLDER_DRAG_MIME)) return;
-                    e.preventDefault();
-                    setRootDragOver(true);
-                  }}
-                  onDragLeave={() => setRootDragOver(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setRootDragOver(false);
-                    handleDropOnRoot(e);
-                  }}
                 >
                   {rootNodes.map((n) => (n.kind === "folder" ? renderFolderNode(n.folder, 0) : renderPdfRow(n.pdf, 0)))}
                   {creatingFor === "root" && (

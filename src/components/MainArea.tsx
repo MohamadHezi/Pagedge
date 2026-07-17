@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useStore } from "../store";
 import { PdfViewer } from "./PdfViewer";
 import { GraphView } from "./GraphView";
@@ -31,34 +32,36 @@ export function MainArea() {
     }
   }, [addPdf]);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setIsDragging(false);
-  };
-
-  // With native window drag-drop disabled (tauri.conf.json:
-  // app.windows[].dragDropEnabled = false — required so the Collections/
-  // Pinned sidebar's page-internal HTML5 drag-and-drop can receive events
-  // at all), OS file drops fall back to the standard browser drop event.
-  // Tauri patches a `path` property onto each dropped File in that mode.
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    for (const file of Array.from(e.dataTransfer.files)) {
-      const path = (file as File & { path?: string }).path;
-      if (path && path.toLowerCase().endsWith(".pdf")) {
-        const pdf = await addPdf(path);
-        if (!pdf.chunk_count) {
-          ingestPdf(pdf.id, pdf.filepath).catch(console.error);
-        }
+  // Native OS file-drop, handled via Tauri's own drag-drop event rather than
+  // the browser's DragEvent/dataTransfer — dataTransfer.files never carries a
+  // real filesystem path in a webview, and window.dragDropEnabled must be
+  // true (tauri.conf.json) for this event to fire at all. Listens webview-
+  // wide, not scoped to this element, which is a superset of the old
+  // per-element handlers (they were already on the whole <main>), so drops
+  // work anywhere in the window including while a PDF is already open.
+  useEffect(() => {
+    const unlistenPromise = getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload;
+      if (payload.type === "over" || payload.type === "enter") {
+        setIsDragging(true);
+      } else if (payload.type === "leave") {
+        setIsDragging(false);
+      } else if (payload.type === "drop") {
+        setIsDragging(false);
+        (async () => {
+          for (const path of payload.paths) {
+            if (path.toLowerCase().endsWith(".pdf")) {
+              const pdf = await addPdf(path);
+              if (!pdf.chunk_count) {
+                ingestPdf(pdf.id, pdf.filepath).catch(console.error);
+              }
+            }
+          }
+        })();
       }
-    }
-  };
+    });
+    return () => { unlistenPromise.then((unlisten) => unlisten()); };
+  }, [addPdf]);
 
   // Sort by last_opened desc, fall back to ingested_at, show top 3.
   const recentPdfs = [...pdfs]
@@ -70,7 +73,7 @@ export function MainArea() {
     .slice(0, 3);
 
   return (
-    <main className="main-area" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+    <main className="main-area">
       {/* ── Library sidebar toggle — always visible regardless of which view is active ── */}
       <button
         className="panel-toggle panel-toggle--left"
