@@ -252,6 +252,12 @@ function uncoveredPortions(pr: HlRect, covers: HlRect[]): HlRect[] {
 
 const STRIPE_H = 3; // CSS px per underline stripe
 
+// How many pages stay mounted (real canvas/text-layer/highlight/drawing
+// layers) on each side of currentPage. Keeps memory bounded regardless of
+// document length — everything outside this window is a lightweight sized
+// placeholder div only. See PDF page virtualization plan for rationale.
+const RENDER_RADIUS = 3;
+
 const LENS_COLOR: Record<string, HighlightColorKey | null> = {
   default: null,
   concepts: "yellow",
@@ -829,7 +835,6 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     clearCompare,
   } = useStore();
 
-  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1.0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -857,9 +862,31 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   const hlCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
   const drawCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
   const viewportsRef = useRef<(PageViewport | null)[]>([]);
-  const renderIdRef = useRef(0);
-  const cancellablesRef = useRef<Cancellable[]>([]);
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
+
+  // ── Page virtualization state ────────────────────────────────────────────
+  // Placeholder height (CSS px, current scale) used for pages that haven't
+  // been rendered yet — derived from page 1's viewport. Most Pagedge
+  // documents (papers/reports/books) are uniform page size, so this is
+  // usually exact; renderPage() corrects it (with scroll compensation) if a
+  // page's real height ever differs.
+  const estimatedPageHeightRef = useRef(0);
+  // Per-page known-actual height once rendered; null until then.
+  const pageHeightsRef = useRef<(number | null)[]>([]);
+  // Which 0-based page indices currently have real canvases mounted.
+  // Ref for synchronous reads, state twin to actually trigger the
+  // conditional-mount re-render.
+  const renderWindowRef = useRef<{ start: number; end: number }>({ start: 0, end: -1 });
+  const [renderWindow, setRenderWindow] = useState<{ start: number; end: number }>({ start: 0, end: -1 });
+  // In-flight render/text-layer tasks per page, so a page scrolling out of
+  // the window can have its work cancelled individually instead of a single
+  // global cancellation token for the whole document.
+  const inFlightRef = useRef<Map<number, Cancellable[]>>(new Map());
+  // Per-page generation counter — bumped on every (re-)render of a page;
+  // the async render function bails if this no longer matches after an
+  // await, replacing the old single global renderIdRef check.
+  const pageGenRef = useRef<number[]>([]);
+  const prevScaleRef = useRef(1.0);
   // Mirror of highlights + activeLens for use inside the async render loop
   // without needing them in the dependency array.
   const highlightsRef = useRef<Highlight[]>(highlights);
@@ -905,12 +932,16 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     let cancelled = false;
 
     const load = async () => {
-      renderIdRef.current += 1;
-      cancellablesRef.current.forEach((c) => c.cancel());
-      cancellablesRef.current = [];
+      inFlightRef.current.forEach((tasks) => tasks.forEach((t) => t.cancel()));
+      inFlightRef.current = new Map();
       pdfDocRef.current?.cleanup();
       pdfDocRef.current = null;
       viewportsRef.current = [];
+      pageHeightsRef.current = [];
+      pageGenRef.current = [];
+      estimatedPageHeightRef.current = 0;
+      renderWindowRef.current = { start: 0, end: -1 };
+      setRenderWindow({ start: 0, end: -1 });
       setPicker(null);
       setHlPopup(null);
       setHlPicker(null);
@@ -925,7 +956,6 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
       setLoading(true);
       setError(null);
-      setPdfDoc(null);
       setNumPages(0);
       setCurrentPage(1);
       setOutline([]);
@@ -943,11 +973,16 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         const pg1 = await doc.getPage(1);
         if (cancelled) { doc.cleanup(); return; }
 
-        const naturalWidth = pg1.getViewport({ scale: 1.0 }).width;
+        const pg1Viewport = pg1.getViewport({ scale: 1.0 });
+        const naturalWidth = pg1Viewport.width;
         const availableWidth = (containerRef.current?.clientWidth ?? 800) - 48;
         const fitScale = Math.max(0.5, Math.min(3.0, availableWidth / naturalWidth));
 
-        setPdfDoc(doc);
+        estimatedPageHeightRef.current = pg1Viewport.height * fitScale;
+        pageHeightsRef.current = new Array(doc.numPages).fill(null);
+        pageGenRef.current = new Array(doc.numPages).fill(0);
+        prevScaleRef.current = fitScale;
+
         setNumPages(doc.numPages);
         setScale(fitScale);
 
@@ -980,106 +1015,194 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     };
   }, [filePath, pdfId]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Render pages + highlights ──────────────────────────────────────────────
+  // ── Which pages currently have real canvases mounted ────────────────────
+  // Derived from currentPage; only this window's worth of pages ever pays
+  // for a real render — everything else is a lightweight placeholder div.
   useEffect(() => {
-    if (!pdfDoc || numPages === 0) return;
+    if (numPages === 0) return;
+    const start = Math.max(0, currentPage - 1 - RENDER_RADIUS);
+    const end = Math.min(numPages - 1, currentPage - 1 + RENDER_RADIUS);
+    setRenderWindow((prev) => {
+      if (prev.start === start && prev.end === end) return prev;
+      renderWindowRef.current = { start, end };
+      return { start, end };
+    });
+  }, [currentPage, numPages]);
 
-    const renderId = ++renderIdRef.current;
-    cancellablesRef.current.forEach((c) => c.cancel());
-    cancellablesRef.current = [];
+  // Cancels page i's in-flight render/text-layer work and bumps its
+  // generation so any still-pending await-continuations become no-ops.
+  const cancelPage = useCallback((i: number) => {
+    const tasks = inFlightRef.current.get(i);
+    if (tasks) {
+      tasks.forEach((t) => t.cancel());
+      inFlightRef.current.delete(i);
+    }
+    pageGenRef.current[i] = (pageGenRef.current[i] ?? 0) + 1;
+  }, []);
 
-    const renderAll = async () => {
-      for (let i = 1; i <= numPages; i++) {
-        if (renderIdRef.current !== renderId) return;
+  // Renders a single page (0-based index) for real: canvas + text layer +
+  // highlights + drawings. Triggered when that page's canvas mounts (enters
+  // the render window) or when scale changes while it's mounted. Every
+  // await-continuation re-checks pageGenRef so a page that's cancelled
+  // mid-render (scrolled back out of the window) bails out cleanly.
+  const renderPage = useCallback(async (i: number, gen: number) => {
+    const doc = pdfDocRef.current;
+    const wrapper = pageRefs.current[i];
+    const canvas = wrapper?.querySelector<HTMLCanvasElement>(".page-canvas");
+    const hlCanvas = hlCanvasRefs.current[i];
+    const drawCanvas = drawCanvasRefs.current[i];
+    const textDiv = wrapper?.querySelector<HTMLDivElement>(".textLayer");
+    if (!doc || !wrapper || !canvas || !textDiv) return;
 
-        const wrapper    = pageRefs.current[i - 1];
-        const canvas     = wrapper?.querySelector<HTMLCanvasElement>(".page-canvas");
-        const hlCanvas   = hlCanvasRefs.current[i - 1];
-        const drawCanvas = drawCanvasRefs.current[i - 1];
-        const textDiv    = wrapper?.querySelector<HTMLDivElement>(".textLayer");
-        if (!wrapper || !canvas || !textDiv) continue;
+    try {
+      const page = await doc.getPage(i + 1);
+      if (pageGenRef.current[i] !== gen) return;
 
-        try {
-          const page = await pdfDoc.getPage(i);
-          if (renderIdRef.current !== renderId) return;
+      const vp = page.getViewport({ scale: scaleRef.current });
+      viewportsRef.current[i] = vp;
+      setViewportVersion((v) => v + 1);
 
-          const vp = page.getViewport({ scale });
-          viewportsRef.current[i - 1] = vp;
-          setViewportVersion((v) => v + 1);
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = `${vp.width}px`;
+      const cssH = `${vp.height}px`;
+      const phyW = Math.floor(vp.width * dpr);
+      const phyH = Math.floor(vp.height * dpr);
 
-          const dpr = window.devicePixelRatio || 1;
-          const cssW = `${vp.width}px`;
-          const cssH = `${vp.height}px`;
-          const phyW = Math.floor(vp.width * dpr);
-          const phyH = Math.floor(vp.height * dpr);
+      // Size page canvas
+      canvas.width = phyW;
+      canvas.height = phyH;
+      canvas.style.width = cssW;
+      canvas.style.height = cssH;
 
-          // Size page canvas
-          canvas.width = phyW;
-          canvas.height = phyH;
-          canvas.style.width = cssW;
-          canvas.style.height = cssH;
-
-          // Size highlight canvas to match
-          if (hlCanvas) {
-            hlCanvas.width = phyW;
-            hlCanvas.height = phyH;
-            hlCanvas.style.width = cssW;
-            hlCanvas.style.height = cssH;
-          }
-
-          // Size drawing canvas to match
-          if (drawCanvas) {
-            drawCanvas.width = phyW;
-            drawCanvas.height = phyH;
-            drawCanvas.style.width = cssW;
-            drawCanvas.style.height = cssH;
-          }
-
-          wrapper.style.width = cssW;
-          wrapper.style.height = cssH;
-          textDiv.innerHTML = "";
-          // pdfjs v6 computes font-size via calc(--total-scale-factor * --font-height).
-          // We must set this variable since we don't use PDFViewerApplication.
-          textDiv.style.setProperty("--total-scale-factor", String(scale));
-
-          const ctx = canvas.getContext("2d")!;
-          ctx.scale(dpr, dpr);
-
-          const renderTask: RenderTask = page.render({ canvas, canvasContext: ctx, viewport: vp });
-          cancellablesRef.current.push(renderTask);
-          await renderTask.promise;
-
-          if (renderIdRef.current !== renderId) return;
-
-          const tl = new TextLayer({
-            textContentSource: page.streamTextContent(),
-            container: textDiv,
-            viewport: vp,
-          });
-          cancellablesRef.current.push(tl);
-          await tl.render();
-
-          // Draw stored highlights for this page, filtered by the active lens.
-          // Uses refs so this loop doesn't pull highlights/lens into its dep array.
-          if (hlCanvas) {
-            const lc = LENS_COLOR[activeLensRef.current];
-            const visible = lc
-              ? highlightsRef.current.filter((h) => h.color === lc)
-              : [];
-            drawHighlightsForPage(hlCanvas, visible, i, vp, scale);
-          }
-
-          if (drawCanvas) {
-            drawDrawingsForPage(drawCanvas, drawingsRef.current, i, vp, scale, null, null, selectedDrawingIdsRef.current);
-          }
-        } catch {
-          // Cancelled tasks throw a benign error; skip silently.
-        }
+      // Size highlight canvas to match
+      if (hlCanvas) {
+        hlCanvas.width = phyW;
+        hlCanvas.height = phyH;
+        hlCanvas.style.width = cssW;
+        hlCanvas.style.height = cssH;
       }
-    };
 
-    renderAll();
-  }, [pdfDoc, scale, numPages]);
+      // Size drawing canvas to match
+      if (drawCanvas) {
+        drawCanvas.width = phyW;
+        drawCanvas.height = phyH;
+        drawCanvas.style.width = cssW;
+        drawCanvas.style.height = cssH;
+      }
+
+      wrapper.style.width = cssW;
+
+      // Height correction — most documents are uniform page size, so the
+      // placeholder estimate is usually already exact and this is a no-op.
+      // When a page's real height differs, patch the wrapper and, only if
+      // it sits above the current scroll position, compensate scrollTop so
+      // content already on screen doesn't visibly jump.
+      const prevHeight = pageHeightsRef.current[i] ?? estimatedPageHeightRef.current;
+      pageHeightsRef.current[i] = vp.height;
+      const container = containerRef.current;
+      if (container && wrapper.offsetTop < container.scrollTop && Math.abs(vp.height - prevHeight) > 0.5) {
+        container.scrollTop += (vp.height - prevHeight);
+      }
+      wrapper.style.height = cssH;
+
+      textDiv.innerHTML = "";
+      // pdfjs v6 computes font-size via calc(--total-scale-factor * --font-height).
+      // We must set this variable since we don't use PDFViewerApplication.
+      textDiv.style.setProperty("--total-scale-factor", String(scaleRef.current));
+
+      const ctx = canvas.getContext("2d")!;
+      ctx.scale(dpr, dpr);
+
+      const renderTask: RenderTask = page.render({ canvas, canvasContext: ctx, viewport: vp });
+      const tasks = inFlightRef.current.get(i) ?? [];
+      tasks.push(renderTask);
+      inFlightRef.current.set(i, tasks);
+      await renderTask.promise;
+
+      if (pageGenRef.current[i] !== gen) return;
+
+      const tl = new TextLayer({
+        textContentSource: page.streamTextContent(),
+        container: textDiv,
+        viewport: vp,
+      });
+      const tasksAfterRender = inFlightRef.current.get(i) ?? [];
+      tasksAfterRender.push(tl);
+      inFlightRef.current.set(i, tasksAfterRender);
+      await tl.render();
+
+      if (pageGenRef.current[i] !== gen) return;
+
+      // Draw stored highlights for this page, filtered by the active lens.
+      // Uses refs so this function doesn't need highlights/lens in a dep array.
+      if (hlCanvas) {
+        const lc = LENS_COLOR[activeLensRef.current];
+        const visible = lc
+          ? highlightsRef.current.filter((h) => h.color === lc)
+          : [];
+        drawHighlightsForPage(hlCanvas, visible, i + 1, vp, scaleRef.current);
+      }
+
+      if (drawCanvas) {
+        drawDrawingsForPage(drawCanvas, drawingsRef.current, i + 1, vp, scaleRef.current, null, null, selectedDrawingIdsRef.current);
+      }
+    } catch {
+      // Cancelled tasks throw a benign error; skip silently.
+    }
+  }, []);
+
+  // ── Re-render mounted pages, and invalidate stale cache for unmounted
+  // pages, when zoom changes. Canvases don't unmount just because scale
+  // changed, so the mount-triggered callback ref (below) won't refire —
+  // this effect is what actually redraws the (small) mounted window.
+  useEffect(() => {
+    const prevScale = prevScaleRef.current;
+    prevScaleRef.current = scale;
+    if (prevScale === scale || numPages === 0) return;
+
+    const ratio = scale / prevScale;
+    estimatedPageHeightRef.current *= ratio;
+
+    const { start, end } = renderWindowRef.current;
+    for (let i = 0; i < numPages; i++) {
+      if (i >= start && i <= end) {
+        const gen = (pageGenRef.current[i] ?? 0) + 1;
+        pageGenRef.current[i] = gen;
+        renderPage(i, gen);
+      } else {
+        if (pageHeightsRef.current[i] != null) {
+          pageHeightsRef.current[i] = pageHeightsRef.current[i]! * ratio;
+        }
+        viewportsRef.current[i] = null;
+      }
+    }
+    // Bump so placeholder heights (derived from the refs above) re-apply.
+    setViewportVersion((v) => v + 1);
+  }, [scale, numPages, renderPage]);
+
+  // Stable per-page ref callbacks for `.page-canvas`. A plain inline arrow
+  // function would get a new identity every render, and React detaches +
+  // reattaches a ref whose identity changes even when the underlying DOM
+  // node hasn't — which would fire renderPage/cancelPage on every unrelated
+  // re-render, not just real mount/unmount. Caching one function per page
+  // index keeps the ref identity stable across re-renders.
+  const pageCanvasRefCallbacks = useRef<Map<number, (el: HTMLCanvasElement | null) => void>>(new Map());
+  const getPageCanvasRef = useCallback((i: number) => {
+    let cb = pageCanvasRefCallbacks.current.get(i);
+    if (!cb) {
+      cb = (el) => {
+        if (el) {
+          const gen = (pageGenRef.current[i] ?? 0) + 1;
+          pageGenRef.current[i] = gen;
+          renderPage(i, gen);
+        } else {
+          cancelPage(i);
+        }
+      };
+      pageCanvasRefCallbacks.current.set(i, cb);
+    }
+    return cb;
+  }, [renderPage, cancelPage]);
 
   // ── Redraw highlights when they change or the active lens switches ────────
   useEffect(() => {
@@ -1870,6 +1993,10 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
       const onMove = (ev: MouseEvent) => {
         if (!isDrawingRef.current) return;
+        // The page virtualization window can unmount this page's canvas
+        // mid-stroke (e.g. a programmatic scroll while dragging) — bail
+        // rather than compute coordinates against a detached node.
+        if (!wrapper.isConnected) return;
         const point = toPoint(ev);
         const localVp = viewportsRef.current[pageIdx]!;
 
@@ -1895,6 +2022,14 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         isDrawingRef.current = false;
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
+
+        // Page scrolled out of the render window mid-stroke — discard
+        // rather than save a drawing computed against a detached node.
+        if (!wrapper.isConnected) {
+          currentStrokeRef.current = [];
+          shapeStartRef.current = null;
+          return;
+        }
 
         const localVp = viewportsRef.current[pageIdx];
         const endPt = toPoint(ev);
@@ -2062,15 +2197,23 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     return () => setJumpToPage(null);
   }, [scrollToPage, setJumpToPage]);
 
-  // Consume a pending cross-PDF page jump queued by SearchModal.
-  // Delay gives the async render loop time to lay out page divs.
+  // Consume a pending cross-PDF page jump queued by SearchModal. Every page
+  // wrapper is sized (placeholder or real) as soon as numPages is set, so
+  // this can fire immediately — no artificial delay needed. A single rAF
+  // retry covers the rare case where pageRefs hasn't committed yet.
   useEffect(() => {
     if (numPages > 0 && pendingJumpPage) {
-      const timer = setTimeout(() => {
-        scrollToPage(pendingJumpPage);
+      const target = pendingJumpPage;
+      if (pageRefs.current[target - 1]) {
+        scrollToPage(target);
         setPendingJumpPage(null);
-      }, 600);
-      return () => clearTimeout(timer);
+      } else {
+        const raf = requestAnimationFrame(() => {
+          scrollToPage(target);
+          setPendingJumpPage(null);
+        });
+        return () => cancelAnimationFrame(raf);
+      }
     }
   }, [numPages, pendingJumpPage, scrollToPage, setPendingJumpPage]);
 
@@ -2196,33 +2339,50 @@ export function PdfViewer({ filePath, pdfId }: Props) {
           onClick={drawMode ? undefined : handlePagesClick}
           onMouseDown={drawMode ? handleDrawStart : undefined}
         >
-          {Array.from({ length: numPages }, (_, i) => (
-            <div
-              key={i}
-              className="pdf-page-wrap"
-              ref={(el) => { pageRefs.current[i] = el; }}
-            >
-              <canvas className="page-canvas" />
-              <canvas
-                className="hl-canvas"
-                ref={(el) => { hlCanvasRefs.current[i] = el; }}
-              />
-              <canvas
-                className="drawing-canvas"
-                ref={(el) => { drawCanvasRefs.current[i] = el; }}
-              />
-              {/* viewportVersion in deps triggers re-render once async render populates viewportsRef */}
-              {viewportVersion >= 0 && viewportsRef.current[i] && (
-                <TextBoxLayer
-                  pageNum={i + 1}
-                  viewport={viewportsRef.current[i]!}
-                  scale={scale}
-                  textBoxes={textBoxes}
-                />
-              )}
-              <div className="textLayer" />
-            </div>
-          ))}
+          {Array.from({ length: numPages }, (_, i) => {
+            // Only pages within the render window get real canvases/text
+            // layers mounted; everything else is a sized placeholder div so
+            // scroll position and jump-to-page stay correct regardless of
+            // document length. viewportVersion (bumped by renderPage) keeps
+            // the placeholder height in sync once a page's real height is known.
+            const isActive = i >= renderWindow.start && i <= renderWindow.end;
+            const wrapperHeight = pageHeightsRef.current[i] ?? estimatedPageHeightRef.current;
+            return (
+              <div
+                key={i}
+                className="pdf-page-wrap"
+                ref={(el) => { pageRefs.current[i] = el; }}
+                style={!isActive && wrapperHeight ? { height: `${wrapperHeight}px` } : undefined}
+              >
+                {isActive && (
+                  <>
+                    <canvas
+                      className="page-canvas"
+                      ref={getPageCanvasRef(i)}
+                    />
+                    <canvas
+                      className="hl-canvas"
+                      ref={(el) => { hlCanvasRefs.current[i] = el; }}
+                    />
+                    <canvas
+                      className="drawing-canvas"
+                      ref={(el) => { drawCanvasRefs.current[i] = el; }}
+                    />
+                    {/* viewportVersion in deps triggers re-render once async render populates viewportsRef */}
+                    {viewportVersion >= 0 && viewportsRef.current[i] && (
+                      <TextBoxLayer
+                        pageNum={i + 1}
+                        viewport={viewportsRef.current[i]!}
+                        scale={scale}
+                        textBoxes={textBoxes}
+                      />
+                    )}
+                    <div className="textLayer" />
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         {/* ── Annotation Dock (draw mode only) ── */}
