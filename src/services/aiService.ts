@@ -4,7 +4,11 @@ import { API_BASE_URL, loadSession, refreshSession } from './authService';
 
 export type { AiMessage };
 
-const FREE_TIER_MAX_CONTEXT_CHARS = 5000;
+// Mirrors FREE_TIER_MAX_CONTEXT_CHARS in pagedge-backend/app/api/ai/chat/route.ts.
+// Sized to fit RightPanel.tsx's CHAT_CHUNK_LIMIT_FREE (4 chunks x ~2000 chars)
+// plus system prompt/question overhead — was 5000, which blocked almost every
+// Chat with PDF question before the chunk limit was made tier-aware.
+const FREE_TIER_MAX_CONTEXT_CHARS = 9000;
 
 // Mirrors FREE_TIER_LIMIT in pagedge-backend/lib/constants.ts — the backend
 // is the enforcement point; this is only for quota display and pre-checks.

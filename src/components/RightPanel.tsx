@@ -13,6 +13,14 @@ const CHAT_SYSTEM =
   'You are a reading assistant. Answer questions about the provided document. ' +
   'Cite page numbers when relevant (e.g. "page 3"). Be concise and direct.';
 
+// Free-tier proxy calls are char-capped (FREE_TIER_MAX_CONTEXT_CHARS in
+// aiService.ts, mirrored on the backend) — 8 chunks at ~2000 chars each
+// blows past that almost every time, so free users on the proxy get a
+// smaller top-N retrieval. Pro and custom-provider users (who aren't
+// subject to that cap) keep full 8-chunk retrieval.
+const CHAT_CHUNK_LIMIT_FREE = 4;
+const CHAT_CHUNK_LIMIT_FULL = 8;
+
 const TAG_SYSTEM =
   'You are a tagging assistant. Read the note and suggest 3-6 relevant tags. ' +
   "Tags should be short (1-3 words), lowercase, specific to the content's topic/domain — " +
@@ -54,6 +62,7 @@ const SHORT_LABEL: Record<HighlightColorKey, string> = {
 async function buildContext(
   pdfId: string,
   question: string,
+  chunkLimit: number,
 ): Promise<{ context: string; chunkCount: number }> {
   console.log('[chat] buildContext: fetching chunks for pdfId =', pdfId);
   const json = await invoke<string>('get_chunks_for_pdf', { pdfId });
@@ -73,7 +82,7 @@ async function buildContext(
   }));
 
   scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, 8).sort((a, b) => a.chunk_index - b.chunk_index);
+  const top = scored.slice(0, chunkLimit).sort((a, b) => a.chunk_index - b.chunk_index);
 
   const context = top.map((c) => `[Page ${c.page}]\n${c.content}`).join('\n\n---\n\n');
   console.log('[chat] buildContext: context preview (first 200 chars):', context.slice(0, 200));
@@ -840,6 +849,8 @@ function ChatView() {
     addChatMessage,
     clearChat,
     jumpToPage,
+    user,
+    aiUseCustomProvider,
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -877,7 +888,10 @@ function ChatView() {
     abortRef.current = new AbortController();
 
     try {
-      const { context, chunkCount } = await buildContext(selectedPdfId, text);
+      const chunkLimit = aiUseCustomProvider || user?.tier === 'pro'
+        ? CHAT_CHUNK_LIMIT_FULL
+        : CHAT_CHUNK_LIMIT_FREE;
+      const { context, chunkCount } = await buildContext(selectedPdfId, text, chunkLimit);
 
       if (chunkCount === 0) {
         console.warn('[chat] No chunks found for pdfId =', selectedPdfId,
