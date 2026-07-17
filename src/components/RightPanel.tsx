@@ -3,10 +3,12 @@ import MDEditor from "@uiw/react-md-editor";
 import "@uiw/react-md-editor/markdown-editor.css";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
-import type { Note, ChatMessage, Highlight, PdfChunk } from "../types";
+import type { Note, ChatMessage, Highlight, RawChunk } from "../types";
 import { HIGHLIGHT_COLORS, HIGHLIGHT_COLOR_KEYS, type HighlightColorKey } from "../constants/highlights";
 import { callAI } from "../services/aiService";
 import { isStandaloneNote } from "../lib/notes";
+import { embedQuery } from "../services/ingestionService";
+import { bytesToFloat32, cosineSimilarity } from "../utils/embeddings";
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 const CHAT_SYSTEM =
@@ -59,30 +61,34 @@ const SHORT_LABEL: Record<HighlightColorKey, string> = {
   pink: "Quote",
 };
 
+// Semantic retrieval — mirrors globalChatService.ts's buildGlobalContext,
+// scoped to a single PDF instead of the whole library. get_chunks_for_pdf
+// doesn't carry embeddings (see PdfChunk's comment in types/index.ts), so
+// this uses get_all_chunks (which does) and filters client-side, same as
+// SearchModal's "this PDF" scope.
 async function buildContext(
   pdfId: string,
   question: string,
   chunkLimit: number,
 ): Promise<{ context: string; chunkCount: number }> {
   console.log('[chat] buildContext: fetching chunks for pdfId =', pdfId);
-  const json = await invoke<string>('get_chunks_for_pdf', { pdfId });
-  const chunks: PdfChunk[] = JSON.parse(json);
+  const [queryVec, json] = await Promise.all([
+    embedQuery(question),
+    invoke<string>('get_all_chunks'),
+  ]);
+  const chunks: RawChunk[] = JSON.parse(json).filter((c: RawChunk) => c.source_id === pdfId);
   console.log('[chat] buildContext: retrieved', chunks.length, 'chunks');
 
   if (chunks.length === 0) return { context: '', chunkCount: 0 };
 
-  const qWords = new Set(
-    question.toLowerCase().match(/\b\w{3,}\b/g) ?? []
-  );
-
-  const scored = chunks.map((c) => ({
-    ...c,
-    score: (c.content.toLowerCase().match(/\b\w{3,}\b/g) ?? [])
-      .filter((w) => qWords.has(w)).length,
-  }));
+  const scored = chunks
+    .filter((c) => c.embedding.length > 0)
+    .map((c) => ({ ...c, score: cosineSimilarity(queryVec, bytesToFloat32(c.embedding)) }));
 
   scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, chunkLimit).sort((a, b) => a.chunk_index - b.chunk_index);
+  // RawChunk carries no chunk_index (unlike PdfChunk) — page order is the
+  // best available proxy for reading order once re-sorted post-scoring.
+  const top = scored.slice(0, chunkLimit).sort((a, b) => a.page - b.page);
 
   const context = top.map((c) => `[Page ${c.page}]\n${c.content}`).join('\n\n---\n\n');
   console.log('[chat] buildContext: context preview (first 200 chars):', context.slice(0, 200));
