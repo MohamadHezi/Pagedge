@@ -93,6 +93,25 @@ export async function resendConfirmation(email: string): Promise<void> {
   });
 }
 
+// Always resolves — the backend never reveals whether the email exists or
+// whether the send actually succeeded, and rate-limits repeat calls itself.
+export async function forgotPassword(email: string): Promise<void> {
+  await request<{ ok: boolean }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+// Called from the pagedge://auth/reset deep link's access_token once the
+// user submits a new password on the reset-password screen. Throws
+// AuthApiError if the token is stale/expired/already-used.
+export async function resetPassword(accessToken: string, newPassword: string): Promise<void> {
+  await request<{ ok: boolean }>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ access_token: accessToken, new_password: newPassword }),
+  });
+}
+
 // Called from the pagedge://auth/confirm deep link, which carries the
 // tokens Supabase mints once the confirmation link is clicked.
 export async function saveSessionTokens(accessToken: string, refreshToken: string): Promise<StoredSession> {

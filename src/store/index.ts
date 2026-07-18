@@ -57,6 +57,13 @@ interface AppState {
   authTokenError: string | null;
   clearAuthTokenError: () => void;
 
+  // Token from a pagedge://auth/reset deep link (Supabase password-recovery
+  // redirect). Non-null forces AuthModal into its reset-password screen,
+  // mirroring how authTokenError forces the verify-email screen. Cleared
+  // once the reset succeeds or the modal is dismissed.
+  passwordResetToken: string | null;
+  setPasswordResetToken: (token: string | null) => void;
+
   // Dismissible auth overlay shown on top of the live app (not a full-tree
   // gate) — call sites that need a signed-in user call requireAuth(reason)
   // to surface it with context-specific copy; the user can dismiss it and
@@ -465,11 +472,14 @@ export const useStore = create<AppState>((set, get) => ({
 
   clearAuthTokenError: () => set({ authTokenError: null }),
 
+  passwordResetToken: null,
+  setPasswordResetToken: (token) => set({ passwordResetToken: token }),
+
   authPromptOpen: false,
   authPromptReason: null,
   authPromptOnSuccess: null,
   requireAuth: (reason, onSuccess) => set({ authPromptOpen: true, authPromptReason: reason ?? null, authPromptOnSuccess: onSuccess ?? null }),
-  dismissAuthPrompt: () => set({ authPromptOpen: false, authPromptReason: null, authPromptOnSuccess: null }),
+  dismissAuthPrompt: () => set({ authPromptOpen: false, authPromptReason: null, authPromptOnSuccess: null, passwordResetToken: null }),
 
   // ── Paywall ───────────────────────────────────────────────────────────────────
   paywallOpen: false,

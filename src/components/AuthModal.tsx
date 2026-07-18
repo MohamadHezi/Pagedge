@@ -1,11 +1,11 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
-import { signIn, signUp, getMe, resendConfirmation, AuthApiError } from '../services/authService';
+import { signIn, signUp, getMe, resendConfirmation, forgotPassword, resetPassword, AuthApiError } from '../services/authService';
 import { useStore } from '../store';
 
 const TERMS_URL = 'https://pagedge.com/terms.html';
 
-type Mode = 'signin' | 'signup' | 'verify-email';
+type Mode = 'signin' | 'signup' | 'verify-email' | 'forgot-password' | 'reset-password';
 
 interface AuthModalProps {
   // Context for why the prompt was raised (e.g. "Sign in to chat with this
@@ -15,14 +15,21 @@ interface AuthModalProps {
 }
 
 export function AuthModal({ reason }: AuthModalProps) {
-  const { setUser, authTokenError, clearAuthTokenError, dismissAuthPrompt, authPromptOnSuccess } = useStore();
+  const {
+    setUser, authTokenError, clearAuthTokenError, dismissAuthPrompt, authPromptOnSuccess,
+    passwordResetToken, setPasswordResetToken,
+  } = useStore();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resendLoading, setResendLoading] = useState(false);
   const [resendSent, setResendSent] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
 
   // A pagedge://auth/confirm deep link failed (stale/expired/already-used
   // token) — that error must only ever surface on the verify-email screen,
@@ -32,11 +39,58 @@ export function AuthModal({ reason }: AuthModalProps) {
     if (authTokenError) setMode('verify-email');
   }, [authTokenError]);
 
+  // A pagedge://auth/reset deep link carries a token — force the modal onto
+  // the reset-password screen, same pattern as authTokenError above.
+  useEffect(() => {
+    if (passwordResetToken) setMode('reset-password');
+  }, [passwordResetToken]);
+
   const switchMode = (next: Mode) => {
     setMode(next);
     setError('');
     setResendSent(false);
+    setForgotSent(false);
     clearAuthTokenError();
+  };
+
+  const handleForgotPassword = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await forgotPassword(email.trim());
+      setForgotSent(true);
+    } catch {
+      // Backend always returns 200, so a failure here is a network error.
+      setError('Network error — check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (newPassword.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await resetPassword(passwordResetToken!, newPassword);
+      setPasswordResetToken(null);
+      setResetDone(true);
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err) {
+      setError(err instanceof AuthApiError ? err.message : 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -111,11 +165,100 @@ export function AuthModal({ reason }: AuthModalProps) {
           <span className="auth-brand-mark">Pagedge</span>
         </div>
 
-        {mode !== 'verify-email' && reason && (
+        {mode !== 'verify-email' && mode !== 'forgot-password' && mode !== 'reset-password' && reason && (
           <p className="auth-reason-banner">{reason}</p>
         )}
 
-        {mode === 'verify-email' ? (
+        {mode === 'forgot-password' ? (
+          <div className="auth-verify">
+            {forgotSent ? (
+              <p className="auth-verify-text">
+                If an account exists for <strong>{email.trim()}</strong>, we've sent a link to reset your password.
+              </p>
+            ) : (
+              <>
+                <p className="auth-verify-text">
+                  Enter your email and we'll send you a link to reset your password.
+                </p>
+                <form className="auth-form" onSubmit={handleForgotPassword}>
+                  <div className="settings-field">
+                    <label className="settings-label">Email</label>
+                    <input
+                      className="settings-input"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      autoComplete="email"
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  {error && <p className="settings-feedback settings-feedback--err">{error}</p>}
+                  <button type="submit" className="auth-submit-btn" disabled={loading || !email.trim()}>
+                    {loading ? 'Sending…' : 'Send reset link'}
+                  </button>
+                </form>
+              </>
+            )}
+            <button type="button" className="auth-link-btn" onClick={() => switchMode('signin')}>
+              Back to sign in
+            </button>
+          </div>
+        ) : mode === 'reset-password' ? (
+          <div className="auth-verify">
+            {resetDone ? (
+              <>
+                <p className="auth-verify-text">Your password has been reset. You can now sign in with your new password.</p>
+                <button type="button" className="auth-submit-btn" onClick={() => { setResetDone(false); switchMode('signin'); }}>
+                  Back to sign in
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="auth-verify-text">Enter a new password for your account.</p>
+                <form className="auth-form" onSubmit={handleResetPassword}>
+                  <div className="settings-field">
+                    <label className="settings-label">New password</label>
+                    <input
+                      className="settings-input"
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="At least 8 characters"
+                      autoComplete="new-password"
+                      minLength={8}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  <div className="settings-field">
+                    <label className="settings-label">Confirm password</label>
+                    <input
+                      className="settings-input"
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="••••••••"
+                      autoComplete="new-password"
+                      minLength={8}
+                      required
+                    />
+                  </div>
+                  {error && <p className="settings-feedback settings-feedback--err">{error}</p>}
+                  <button type="submit" className="auth-submit-btn" disabled={loading}>
+                    {loading ? 'Resetting…' : 'Reset password'}
+                  </button>
+                </form>
+                {error && (
+                  <button type="button" className="auth-link-btn" onClick={() => { setPasswordResetToken(null); switchMode('forgot-password'); }}>
+                    Request a new reset link
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        ) : mode === 'verify-email' ? (
           <div className="auth-verify">
             {authTokenError ? (
               <p className="auth-verify-text">
@@ -201,6 +344,12 @@ export function AuthModal({ reason }: AuthModalProps) {
                   : (mode === 'signin' ? 'Sign In' : 'Create Account')}
               </button>
             </form>
+
+            {mode === 'signin' && (
+              <button type="button" className="auth-link-btn" onClick={() => switchMode('forgot-password')}>
+                Forgot password?
+              </button>
+            )}
 
             <p className="auth-legal">
               By creating an account, you agree to our{' '}

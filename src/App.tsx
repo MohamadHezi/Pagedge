@@ -26,6 +26,7 @@ import "./App.css";
 // a known platform quirk — an already-consumed confirmation token is not
 // reprocessed and re-thrown as a stale "Invalid or expired token" error.
 const PROCESSED_AUTH_TOKEN_KEY = 'pagedge_last_processed_auth_token';
+const PROCESSED_RESET_TOKEN_KEY = 'pagedge_last_processed_reset_token';
 
 function App() {
   const {
@@ -33,7 +34,7 @@ function App() {
     initAuth, authLoading, user,
     refreshUserFromMe, closePaywall, completeEmailVerification,
     emailVerifyToastOpen, dismissEmailVerifyToast,
-    authPromptOpen, authPromptReason,
+    authPromptOpen, authPromptReason, requireAuth, setPasswordResetToken,
     loadFolders, loadLastSyncedAt,
   } = useStore();
 
@@ -95,10 +96,25 @@ function App() {
         completeEmailVerification(accessToken, refreshToken).then(() => {
           showAppToast('Email confirmed! Welcome to Pagedge.');
         });
+      } else if (url.startsWith('pagedge://auth/reset')) {
+        // Supabase's password-recovery redirect — same implicit-grant
+        // fragment shape as auth/confirm, but this token is only used to
+        // authorize a single password change (via reset-password below),
+        // never saved as a session.
+        const hash = new URL(url).hash.replace(/^#/, '');
+        const params = new URLSearchParams(hash);
+        const accessToken = params.get('access_token');
+        if (!accessToken) return;
+
+        if (localStorage.getItem(PROCESSED_RESET_TOKEN_KEY) === accessToken) return;
+        localStorage.setItem(PROCESSED_RESET_TOKEN_KEY, accessToken);
+
+        setPasswordResetToken(accessToken);
+        requireAuth();
       }
     });
     return () => { unlistenPromise.then((unlisten) => unlisten()); };
-  }, [refreshUserFromMe, closePaywall, completeEmailVerification]);
+  }, [refreshUserFromMe, closePaywall, completeEmailVerification, setPasswordResetToken, requireAuth]);
 
   // Sync pull whenever the app regains focus (switching back from another
   // window/app) — scoped per-PDF inside pullAllOnForeground itself.
