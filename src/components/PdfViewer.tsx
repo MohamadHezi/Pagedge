@@ -2252,6 +2252,79 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     setScale(Math.max(0.5, Math.min(3.0, availableWidth / naturalWidth)));
   }, []);
 
+  // ── Ctrl+scroll / trackpad pinch-to-zoom ──────────────────────────────────
+  // Trackpad pinch arrives as a wheel event with ctrlKey set — the browser
+  // normalizes it that way, indistinguishable from a real Ctrl+scroll, so one
+  // handler covers both. Native (not React's onWheel) because React attaches
+  // wheel listeners as passive by default; preventDefault() would silently
+  // no-op there and the WebView2 shell would zoom the whole app UI instead.
+  // Cursor-anchored: the content point under the cursor stays fixed as the
+  // page scales around it, matching the feel of Figma/Google Maps rather
+  // than just re-centering on the current page.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheelZoom = (e: WheelEvent) => {
+      if (!e.ctrlKey) return; // plain scroll / two-finger pan — let it through natively
+      e.preventDefault();
+
+      const prevScale = scaleRef.current;
+      const factor = Math.exp(-e.deltaY * 0.0025);
+      const nextScale = Math.max(0.5, Math.min(3.0, parseFloat((prevScale * factor).toFixed(3))));
+      if (nextScale === prevScale) return;
+
+      const rect = container.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left;
+      const offsetY = e.clientY - rect.top;
+      const contentX = offsetX + container.scrollLeft;
+      const contentY = offsetY + container.scrollTop;
+      const ratio = nextScale / prevScale;
+
+      setScale(nextScale);
+      // Deferred to rAF: the scale-change effect resizes page elements on
+      // commit, and scrollLeft/scrollTop assignments clamp to the *current*
+      // scrollWidth/Height at the moment they're set — setting them before
+      // layout catches up to the new scale would clamp to the old (smaller,
+      // when zooming in) bounds and land in the wrong place.
+      requestAnimationFrame(() => {
+        if (!containerRef.current) return;
+        containerRef.current.scrollLeft = contentX * ratio - offsetX;
+        containerRef.current.scrollTop = contentY * ratio - offsetY;
+      });
+    };
+
+    container.addEventListener("wheel", handleWheelZoom, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheelZoom);
+    // Re-runs when `loading` flips false→true→false across PDF switches —
+    // needed because containerRef.current is null while the "Loading PDF…"
+    // placeholder is shown (no .pdf-pages div mounted yet), so an empty dep
+    // array would attach nothing on the very first load and never retry.
+  }, [loading]);
+
+  // ── Zoom keyboard shortcuts (Ctrl/Cmd +/-/0) ──────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const tag = (e.target as HTMLElement).tagName;
+      const isEditable = (e.target as HTMLElement).isContentEditable;
+      if (tag === "INPUT" || tag === "TEXTAREA" || isEditable) return;
+
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        setScale((s) => Math.min(3.0, parseFloat((s + 0.25).toFixed(2))));
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        setScale((s) => Math.max(0.5, parseFloat((s - 0.25).toFixed(2))));
+      } else if (e.key === "0") {
+        e.preventDefault();
+        fitToWidth();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [fitToWidth]);
+
   const handleNewNote = useCallback(async () => {
     try {
       const json = await invoke<string>("create_note", {
