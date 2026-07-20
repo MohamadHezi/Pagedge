@@ -70,7 +70,7 @@ export function PaywallModal() {
 
         <div className="paywall-actions">
           <button className="settings-btn settings-btn--primary paywall-upgrade-btn" onClick={handleUpgrade} disabled={upgrading}>
-            {upgrading ? 'Opening checkout…' : 'Upgrade to Pro — $10/month'}
+            {upgrading ? 'Opening checkout…' : 'Upgrade to Pro — $5/month'}
           </button>
           <button className="settings-btn settings-btn--ghost" onClick={closePaywall} disabled={upgrading}>
             Maybe later
