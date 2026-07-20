@@ -10,6 +10,8 @@ Brand: motion is part of the voice; one well-rehearsed entrance beats scattered 
 
 Product: 150–250 ms on most transitions. Motion conveys state: feedback, reveal, loading, transitions between views. No page-load choreography; users are in a task and won't wait for it.
 
+Native (`ios` / `android` / `adaptive`): implementation follows the Motion section of [ios.md](ios.md) / [android.md](android.md) (read it first if Setup hasn't already): system transitions and OS Reduce Motion, never the web tooling below.
+
 ---
 
 ## Assess Animation Opportunities
@@ -29,7 +31,7 @@ Analyze where motion would improve the experience:
    - Who's the audience? (Motion-sensitive users? Power users who want speed?)
    - What matters most? (One hero animation vs many micro-interactions?)
 
-If any of these are unclear from the codebase, STOP and use Codex's structured user-input/question tool when available; if unavailable, ask directly in chat to clarify what you cannot infer.
+If any of these are unclear from the codebase, STOP and call the AskUserQuestion tool to clarify.
 
 **CRITICAL**: Respect `prefers-reduced-motion`. Always provide non-animated alternatives for users who need them.
 
@@ -198,4 +200,4 @@ Test animations thoroughly:
 - **Doesn't block**: Users can interact during/after animations
 - **Adds value**: Makes interface clearer or more delightful
 
-When the motion clarifies state instead of decorating it, hand off to `$impeccable polish` for the final pass.
+When the motion clarifies state instead of decorating it, hand off to `/impeccable polish` for the final pass.
