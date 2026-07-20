@@ -4,8 +4,342 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pagedge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <style>
+      /* Launch splash — inline so it paints before the JS bundle loads.
+         Colors are hardcoded copies of the tokens in src/index.css
+         (--bg-surface #19120a, --text-primary #eee0d2, --accent #ffc880,
+         --accent-container #f5a623) since custom properties aren't
+         available until the bundle mounts. Dismissed from App.tsx once
+         the startup session check resolves.
+
+         Choreography (letter/stroke times run from the moment the
+         `splash-fonts-ready` class lands — see the font-gate script
+         below — everything else from first paint):
+           0ms    logo rises + settles, halo blooms behind it
+           +200ms wordmark letters resolve one by one (blur → sharp)
+           380ms  specular shine glints once across the metallic logo
+           +600ms amber highlighter stroke swipes across the wordmark
+           1050ms progress sweep fades in (only seen on slower launches)
+           then   halo breathes until App.tsx fades the splash out */
+      html {
+        background: #19120a;
+      }
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2000; /* above every app layer (highest in-app is the 1200 toast) */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+          radial-gradient(720px 480px at 50% 40%, rgba(255, 200, 128, 0.055), transparent 70%),
+          #19120a;
+        transition:
+          opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+          transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-font-smoothing: antialiased; /* match body (index.css) before the bundle loads */
+        cursor: default;
+      }
+      /* Film grain — gives the obsidian surface material depth. */
+      #splash::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.05;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+      }
+      #splash.splash-done {
+        opacity: 0;
+        transform: scale(1.015);
+        pointer-events: none;
+      }
+      .splash-inner {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      /* ── Logo + halo + shine ── */
+      .splash-logo-wrap {
+        position: relative;
+        width: 76px;
+        height: 76px;
+        opacity: 0;
+        transform: translateY(14px) scale(0.94);
+        animation: splash-rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.05s forwards;
+      }
+      .splash-halo {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 210px;
+        height: 210px;
+        margin: -105px 0 0 -105px;
+        border-radius: 50%;
+        background: radial-gradient(
+          circle,
+          rgba(255, 200, 128, 0.17),
+          rgba(255, 200, 128, 0.05) 45%,
+          transparent 68%
+        );
+        opacity: 0;
+        animation:
+          splash-fade-in 0.8s ease-out 0.15s forwards,
+          splash-breathe 3.6s ease-in-out 1.2s infinite alternate;
+      }
+      .splash-logo {
+        position: relative;
+        width: 76px;
+        height: 76px;
+      }
+      /* One-shot specular glint, masked to the logo's own alpha so the
+         light only travels across the metal of the P. */
+      .splash-shine {
+        position: absolute;
+        inset: 0;
+        -webkit-mask: url('/logo.png') center / contain no-repeat;
+        mask: url('/logo.png') center / contain no-repeat;
+        background: linear-gradient(
+          115deg,
+          transparent 34%,
+          rgba(255, 255, 255, 0.75) 47%,
+          rgba(255, 240, 220, 0.85) 51%,
+          transparent 66%
+        );
+        background-size: 260% 260%;
+        background-position: 130% 0;
+        animation: splash-glint 0.75s cubic-bezier(0.4, 0, 0.2, 1) 0.38s forwards;
+      }
+
+      /* ── Wordmark: per-letter blur-settle + highlighter stroke ──
+         Letter + stroke animations only start once `splash-fonts-ready`
+         lands on <html> (script below): animating text through a font
+         swap mid-flight reads as the letters "changing style". Base
+         state keeps them invisible until then. */
+      .splash-wordmark {
+        position: relative;
+        margin-top: 18px;
+        font-family: 'Newsreader', Georgia, 'Times New Roman', serif;
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: #eee0d2;
+      }
+      .splash-wordmark .sl {
+        display: inline-block;
+        opacity: 0;
+        transform: translateY(9px);
+        filter: blur(4px);
+        /* Keep each letter on its compositing layer after the animation
+           finishes — without this the text re-rasterizes (subpixel AA
+           snap) the instant the blur animation completes. */
+        will-change: transform, opacity, filter;
+      }
+      .splash-fonts-ready .splash-wordmark .sl {
+        animation: splash-letter 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      .splash-wordmark .sl:nth-child(2) { animation-delay: 0.2s; }
+      .splash-wordmark .sl:nth-child(3) { animation-delay: 0.24s; }
+      .splash-wordmark .sl:nth-child(4) { animation-delay: 0.28s; }
+      .splash-wordmark .sl:nth-child(5) { animation-delay: 0.32s; }
+      .splash-wordmark .sl:nth-child(6) { animation-delay: 0.36s; }
+      .splash-wordmark .sl:nth-child(7) { animation-delay: 0.4s; }
+      .splash-wordmark .sl:nth-child(8) { animation-delay: 0.44s; }
+      .splash-wordmark .sl--edge {
+        font-style: italic;
+        color: #ffc880;
+      }
+      /* The brand gesture: a marker stroke swiping across the name. */
+      .splash-stroke {
+        position: absolute;
+        left: -7px;
+        right: -7px;
+        bottom: 3px;
+        height: 46%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, rgba(245, 166, 35, 0.28), rgba(255, 200, 128, 0.16));
+        transform: scaleX(0) skewX(-8deg);
+        transform-origin: left center;
+      }
+      .splash-fonts-ready .splash-stroke {
+        animation: splash-stroke 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.6s forwards;
+      }
+
+      /* ── Progress sweep (indeterminate) ── */
+      .splash-track {
+        position: relative;
+        overflow: hidden;
+        margin-top: 24px;
+        width: 132px;
+        height: 2px;
+        border-radius: 2px;
+        background: rgba(159, 142, 122, 0.2);
+        opacity: 0;
+        animation: splash-fade-in 0.35s ease-out 1.05s forwards;
+      }
+      .splash-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 36%;
+        height: 100%;
+        border-radius: 2px;
+        background: linear-gradient(
+          90deg,
+          rgba(245, 166, 35, 0),
+          #f5a623 40%,
+          #ffc880 60%,
+          rgba(255, 200, 128, 0)
+        );
+        box-shadow: 0 0 12px rgba(245, 166, 35, 0.35);
+        animation: splash-sweep 1.15s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+      }
+
+      @keyframes splash-rise {
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+      @keyframes splash-fade-in {
+        to {
+          opacity: 1;
+        }
+      }
+      @keyframes splash-breathe {
+        from {
+          opacity: 0.75;
+          transform: scale(1);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1.12);
+        }
+      }
+      @keyframes splash-glint {
+        to {
+          background-position: -130% 0;
+        }
+      }
+      @keyframes splash-letter {
+        to {
+          opacity: 1;
+          transform: translateY(0);
+          filter: blur(0);
+        }
+      }
+      @keyframes splash-stroke {
+        to {
+          transform: scaleX(1) skewX(-8deg);
+        }
+      }
+      @keyframes splash-sweep {
+        from {
+          transform: translateX(-120%);
+        }
+        to {
+          transform: translateX(420%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #splash {
+          transition: none;
+        }
+        #splash.splash-done {
+          transform: none;
+        }
+        .splash-logo-wrap,
+        .splash-track,
+        .splash-wordmark .sl,
+        .splash-fonts-ready .splash-wordmark .sl {
+          opacity: 1;
+          transform: none;
+          filter: none;
+          animation: none;
+        }
+        .splash-halo {
+          opacity: 1;
+          animation: none;
+        }
+        .splash-shine {
+          display: none;
+        }
+        .splash-stroke,
+        .splash-fonts-ready .splash-stroke {
+          transform: scaleX(1) skewX(-8deg);
+          animation: none;
+        }
+        .splash-bar {
+          /* Static full-width accent rule instead of a sweeping bar —
+             still reads as "working", zero motion. */
+          width: 100%;
+          animation: none;
+          opacity: 0.45;
+        }
+      }
+    </style>
+    <script>
+      // Font gate for the splash wordmark. The Newsreader faces the splash
+      // uses (600 + italic 600) are fetched here directly — injected via JS
+      // so the stylesheet is NOT render-blocking (a plain <link> in <head>
+      // would hold up first paint until Google Fonts responds, which
+      // offline would mean a blank window). Once both faces are usable —
+      // or after 900ms, whichever comes first — `splash-fonts-ready` on
+      // <html> starts the letter animations, so they never animate through
+      // a Georgia → Newsreader swap mid-flight. (index.css @import loads
+      // the rest of the app's fonts as before; same URL family, cached.)
+      (function () {
+        var fired = false;
+        function ready() {
+          if (fired) return;
+          fired = true;
+          document.documentElement.classList.add('splash-fonts-ready');
+        }
+        try {
+          var l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.href =
+            'https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,600;1,6..72,600&display=swap';
+          l.onload = function () {
+            if (document.fonts && document.fonts.load) {
+              Promise.all([
+                document.fonts.load("600 24px 'Newsreader'"),
+                document.fonts.load("italic 600 24px 'Newsreader'"),
+              ]).then(ready, ready);
+            } else {
+              ready();
+            }
+          };
+          l.onerror = ready;
+          document.head.appendChild(l);
+          setTimeout(ready, 900);
+        } catch (e) {
+          ready();
+        }
+      })();
+    </script>
   </head>
   <body>
+    <div id="splash" aria-hidden="true">
+      <div class="splash-inner">
+        <div class="splash-logo-wrap">
+          <div class="splash-halo"></div>
+          <img class="splash-logo" src="/logo.png" alt="" width="76" height="76" />
+          <div class="splash-shine"></div>
+        </div>
+        <div class="splash-wordmark">
+          <div class="splash-stroke"></div><span class="sl">P</span><span class="sl">a</span><span class="sl">g</span><span class="sl sl--edge">e</span><span class="sl sl--edge">d</span><span class="sl sl--edge">g</span><span class="sl sl--edge">e</span>
+        </div>
+        <div class="splash-track"><div class="splash-bar"></div></div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

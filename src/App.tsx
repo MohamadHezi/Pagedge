@@ -129,6 +129,31 @@ function App() {
     };
   }, []);
 
+  // Launch splash lives in index.html (outside #root) so it paints before
+  // the JS bundle loads. Fade it out once the startup session check
+  // resolves, holding it on screen long enough that a fast resolve doesn't
+  // read as a flicker. performance.now() is time since navigation start,
+  // i.e. total time the splash has already been visible.
+  useEffect(() => {
+    if (authLoading) return;
+    const splash = document.getElementById('splash');
+    if (!splash) return;
+    const dismiss = () => {
+      splash.classList.add('splash-done');
+      // Past the 340ms opacity/transform transition (0ms under reduced motion).
+      window.setTimeout(() => splash.remove(), 450);
+    };
+    // Long enough for the full entrance choreography (~1.15s, see the
+    // timeline comment in index.html) to land before the fade begins.
+    const MIN_SPLASH_MS = 1200;
+    const remaining = MIN_SPLASH_MS - performance.now();
+    if (remaining > 0) {
+      const t = window.setTimeout(dismiss, remaining);
+      return () => window.clearTimeout(t);
+    }
+    dismiss();
+  }, [authLoading]);
+
   // Ctrl+K / Cmd+K global shortcut to open search
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

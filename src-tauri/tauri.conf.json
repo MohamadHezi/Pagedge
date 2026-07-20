@@ -1,6 +1,6 @@
 {
   "productName": "Pagedge",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "identifier": "com.pagedge.app",
   "build": {
     "frontendDist": "../dist",
@@ -18,7 +18,8 @@
         "minHeight": 600,
         "decorations": true,
         "center": true,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "backgroundColor": "#19120a"
       }
     ],
     "security": {
