@@ -4,6 +4,8 @@ import { useStore } from "../store";
 import { ingestPdf } from "../services/ingestionService";
 import { materializePendingAnnotations, dismissPendingAnnotations } from "../services/syncService";
 import { OutlineSection } from "./OutlinePanel";
+import { HIGHLIGHT_COLORS, HIGHLIGHT_COLOR_KEYS } from "../constants/highlights";
+import type { HighlightColorKey } from "../constants/highlights";
 import type { Flashcard, Highlight, Pdf, Folder } from "../types";
 
 type QuickView = "recent" | "quotes";
@@ -21,6 +23,7 @@ export function LibrarySidebar() {
     startReview, pendingImportPrompt, remoteOnlyPdfs,
     folders, createFolder, renameFolder, deleteFolder, moveFolderToParent, movePdfToFolder, setPdfPinned, setFolderPinned,
     standaloneNotes, loadStandaloneNotes, createStandaloneNote, openStandaloneNote,
+    highlights,
   } = useStore();
 
   const [isImporting, setIsImporting] = useState(false);
@@ -29,6 +32,43 @@ export function LibrarySidebar() {
   const [librarySectionExpanded, setLibrarySectionExpanded] = useState(true);
   const [syncedSectionExpanded, setSyncedSectionExpanded] = useState(true);
   const [quickViewsSectionExpanded, setQuickViewsSectionExpanded] = useState(true);
+
+  // ── Per-PDF highlight-color summary (small color dots on each row) ────────
+  // Loaded once for the whole library via the lightweight colors-only
+  // command, then kept live for whichever PDF is currently open by deriving
+  // straight from the already-subscribed `highlights` array — avoids
+  // re-fetching the whole library just because the open document's
+  // highlights changed.
+  const [pdfColors, setPdfColors] = useState<Map<string, Set<HighlightColorKey>>>(new Map());
+
+  useEffect(() => {
+    invoke<string>("get_highlight_colors_by_pdf")
+      .then((json) => {
+        const pairs: [string, HighlightColorKey][] = JSON.parse(json);
+        const map = new Map<string, Set<HighlightColorKey>>();
+        for (const [pdfId, color] of pairs) {
+          if (!map.has(pdfId)) map.set(pdfId, new Set());
+          map.get(pdfId)!.add(color);
+        }
+        setPdfColors(map);
+      })
+      .catch((err) => console.error("Failed to load highlight colors by PDF:", err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedPdfId) return;
+    setPdfColors((prev) => {
+      const colors = new Set(highlights.map((h) => h.color as HighlightColorKey));
+      const existing = prev.get(selectedPdfId);
+      if (existing && existing.size === colors.size && [...existing].every((c) => colors.has(c))) {
+        return prev; // no change — skip the re-render
+      }
+      const next = new Map(prev);
+      next.set(selectedPdfId, colors);
+      return next;
+    });
+  }, [highlights, selectedPdfId]);
 
   // Shared props for a nav-section-header that toggles a collapsible body —
   // same accordion look/behavior across Notes, Library, Synced Elsewhere, Quick Views.
@@ -472,6 +512,20 @@ export function LibrarySidebar() {
           </span>
         )}
 
+        {/* Highlight-color summary — one dot per color present, canonical order */}
+        {!isRenaming && pdfColors.get(pdf.id) && pdfColors.get(pdf.id)!.size > 0 && (
+          <span className="pdf-color-dots">
+            {HIGHLIGHT_COLOR_KEYS.filter((key) => pdfColors.get(pdf.id)!.has(key)).map((key) => (
+              <span
+                key={key}
+                className="pdf-color-dot"
+                title={HIGHLIGHT_COLORS[key].label}
+                style={{ background: HIGHLIGHT_COLORS[key].hex }}
+              />
+            ))}
+          </span>
+        )}
+
         {/* Pin toggle — always visible when pinned, hover-revealed otherwise */}
         {!isRenaming && (
           <button
@@ -711,7 +765,9 @@ export function LibrarySidebar() {
               <path d="M4 4h16v16H4z" />
               <path d="M8 9h8M8 13h8M8 17h5" />
             </svg>
-            <span className="nav-section-title">Notes</span>
+            <span className="nav-section-title">
+              Notes{standaloneNotes.length > 0 && <span className="nav-section-count">{standaloneNotes.length}</span>}
+            </span>
             <button
               className="collection-add-root-btn"
               title="New note"
@@ -763,6 +819,7 @@ export function LibrarySidebar() {
             </svg>
             <span className="nav-section-title">
               {activeQuickView === "recent" ? "Recent" : activeQuickView === "quotes" ? "Citations & Quotes" : "Library"}
+              {!activeQuickView && pdfs.length > 0 && <span className="nav-section-count">{pdfs.length}</span>}
             </span>
             {activeQuickView ? (
               <button
@@ -843,7 +900,9 @@ export function LibrarySidebar() {
               <svg className="nav-section-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-1.8A7 7 0 1 0 4 14.9" />
               </svg>
-              <span className="nav-section-title">Synced Elsewhere</span>
+              <span className="nav-section-title">
+                Synced Elsewhere<span className="nav-section-count">{remoteOnlyPdfs.length}</span>
+              </span>
             </div>
             <div className={`outline-collapse${syncedSectionExpanded ? " outline-collapse--expanded" : ""}`}>
               <div className="outline-collapse-inner">

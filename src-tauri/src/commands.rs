@@ -765,6 +765,26 @@ pub fn get_highlights_by_color(app: AppHandle, color: String) -> Result<String, 
     serde_json::to_string(&highlights).map_err(|e| e.to_string())
 }
 
+// Lightweight companion to get_all_highlights — just (pdf_id, color) pairs,
+// not full highlight rows (text/position/etc), for the library sidebar's
+// per-document color-dot summary. Distinct so a document with 40 yellow
+// highlights returns one ("pdf_id", "yellow") row, not 40.
+#[tauri::command]
+pub fn get_highlight_colors_by_pdf(app: AppHandle) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT pdf_id, color FROM highlights WHERE deleted_at IS NULL")
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    serde_json::to_string(&rows).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_all_highlights(app: AppHandle) -> Result<String, String> {
     let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
