@@ -22,6 +22,10 @@ import { readPdfBytes } from "../services/pdfBytesCache";
 import { pdfPointToCanvasPixel } from "../lib/coords";
 import { drawingToSketchStroke, sketchStrokeToDrawing } from "../lib/drawingConversion";
 
+// First-time-only hint above the color picker, explaining the 4-color system
+// before a brand-new user's first pick — never shown again after that.
+const HIGHLIGHT_HINT_SEEN_KEY = 'pagedge_highlight_hint_seen';
+
 // ── AI prompts ────────────────────────────────────────────────────────────────
 const EXPLAIN_SYSTEM = 'You are a helpful reading assistant. Be concise.';
 const EXPLAIN_PREFIX = 'Explain this passage clearly and concisely:\n\n';
@@ -355,18 +359,30 @@ function ColorPickerPopup({
   onColorSelect,
   onExplain,
   onDismiss,
+  showHint,
 }: {
   screenX: number;
   screenY: number;
   onColorSelect: (key: HighlightColorKey) => void;
   onExplain: () => void;
   onDismiss: () => void;
+  showHint: boolean;
 }) {
+  useEffect(() => {
+    if (showHint) localStorage.setItem(HIGHLIGHT_HINT_SEEN_KEY, 'true');
+  }, [showHint]);
+
   return (
-    <div
-      className="color-picker-popup"
-      style={{ left: screenX, top: screenY }}
-    >
+    <>
+      {showHint && (
+        <div className="color-picker-hint" style={{ left: screenX, top: screenY }}>
+          Concept · Confused · Flashcard · Quote
+        </div>
+      )}
+      <div
+        className="color-picker-popup"
+        style={{ left: screenX, top: screenY }}
+      >
       {HIGHLIGHT_COLOR_KEYS.map((key) => (
         <button
           key={key}
@@ -400,7 +416,8 @@ function ColorPickerPopup({
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -2442,6 +2459,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
             window.getSelection()?.removeAllRanges();
             setPicker(null);
           }}
+          showHint={localStorage.getItem(HIGHLIGHT_HINT_SEEN_KEY) !== 'true'}
         />
       )}
 

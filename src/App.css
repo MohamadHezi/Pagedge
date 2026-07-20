@@ -965,6 +965,31 @@
   to   { opacity: 1; transform: translateX(-50%) translateY(calc(-100% - 10px)); }
 }
 
+/* First-time-only label above the color picker, explaining the 4-color
+   system before a brand-new user's first pick (see HIGHLIGHT_HINT_SEEN_KEY
+   in PdfViewer.tsx) — never shown again after that. Positioned as a
+   separate element (not nested in .color-picker-popup) since that class is
+   also reused standalone by HlPickerPopup elsewhere in this file. */
+.color-picker-hint {
+  position: fixed;
+  transform: translateX(-50%) translateY(calc(-100% - 52px));
+  z-index: 500;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: hint-in 0.15s ease;
+}
+
+@keyframes hint-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(calc(-100% - 48px)); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(calc(-100% - 52px)); }
+}
+
 .color-picker-dot {
   width: 22px;
   height: 22px;
