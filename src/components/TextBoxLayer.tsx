@@ -5,10 +5,10 @@ import type { TextBox } from "../types";
 import { useStore } from "../store";
 
 const TB_COLORS = [
+  "#1a1a1a",
   "#eee0d2",
   "#ffffff",
   "#ff3b30",
-  "#1a1a1a",
   "#FFD60A",
   "#4DA6FF",
   "#34C759",

@@ -1936,7 +1936,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
           width: DEFAULT_W,
           height: DEFAULT_H,
           fontSize: 14,
-          color: '#eee0d2',
+          color: '#1a1a1a',
         });
         const tb: TextBox = JSON.parse(json);
         addTextBox(tb);
