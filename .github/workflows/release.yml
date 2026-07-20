@@ -59,6 +59,13 @@ jobs:
           # Step 10c notes). Replace with a real Developer ID identity
           # before public launch.
           APPLE_SIGNING_IDENTITY: '-'
+          # Sentry — baked into the shipped binaries at build time. Both are
+          # safe to be visible in a built artifact (Sentry DSNs are public
+          # identifiers, not secrets) but are still sourced from repo
+          # secrets here so an empty/unset secret cleanly resolves to "" and
+          # Sentry.init()/sentry::init() both treat that as disabled.
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN_DESKTOP }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN_DESKTOP }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Pagedge ${{ github.ref_name }}'

@@ -190,6 +190,7 @@ interface AppState {
 
   // ── Chat ──────────────────────────────────────────────────────────────────────
   chatMessages: ChatMessage[];
+  loadChatMessages: (pdfId: string) => Promise<void>;
   addChatMessage: (msg: ChatMessage) => void;
   clearChat: () => void;
   isAiLoading: boolean;
@@ -668,6 +669,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (id) {
       const pdf = useStore.getState().pdfs.find((p) => p.id === id);
       if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
+      useStore.getState().loadChatMessages(id).catch((err) => console.error('[chat] failed to load history', err));
     }
   },
 
@@ -843,8 +845,32 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ── Chat ──────────────────────────────────────────────────────────────────────
   chatMessages: [],
-  addChatMessage: (msg) => set((state) => ({ chatMessages: [...state.chatMessages, msg] })),
-  clearChat: () => set({ chatMessages: [] }),
+  loadChatMessages: async (pdfId: string) => {
+    const json = await invoke<string>("get_chat_messages", { pdfId });
+    const rows: { id: string; role: 'user' | 'assistant'; content: string; created_at: string }[] = JSON.parse(json);
+    const chatMessages: ChatMessage[] = rows.map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      timestamp: Date.parse(r.created_at),
+    }));
+    set({ chatMessages });
+  },
+  addChatMessage: (msg) => {
+    set((state) => ({ chatMessages: [...state.chatMessages, msg] }));
+    const pdfId = useStore.getState().selectedPdfId;
+    if (pdfId) {
+      invoke("add_chat_message", { pdfId, id: msg.id, role: msg.role, content: msg.content })
+        .catch((err) => console.error('[chat] failed to persist message', err));
+    }
+  },
+  clearChat: () => {
+    const pdfId = useStore.getState().selectedPdfId;
+    set({ chatMessages: [] });
+    if (pdfId) {
+      invoke("clear_chat_messages", { pdfId }).catch((err) => console.error('[chat] failed to clear history', err));
+    }
+  },
   isAiLoading: false,
   setAiLoading: (loading) => set({ isAiLoading: loading }),
 

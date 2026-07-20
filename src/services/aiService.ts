@@ -122,6 +122,13 @@ async function callProxy(
   }
 
   if (response.status === 429) {
+    const data = await response.json().catch(() => ({}));
+    // rate_limited is a burst guard (too many requests too fast), distinct from
+    // quota_exceeded (out of monthly calls) — only the latter is fixed by
+    // upgrading, so only the latter should show the paywall.
+    if (data?.error === 'rate_limited') {
+      throw new Error('Too many requests — please slow down and try again in a moment.');
+    }
     showPaywall('quota_exceeded');
     throw new Error('quota_exceeded');
   }

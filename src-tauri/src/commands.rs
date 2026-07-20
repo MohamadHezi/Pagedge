@@ -186,6 +186,8 @@ pub fn delete_pdf(app: AppHandle, id: String) -> Result<(), String> {
     // devices survive and re-importing the same file re-pulls them.
     conn.execute("DELETE FROM notes WHERE source_pdf_id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM chat_messages WHERE pdf_id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM pdfs WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1220,6 +1222,74 @@ pub fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), Str
         rusqlite::params![key, value],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Chat messages ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChatMessageRow {
+    pub id: String,
+    pub pdf_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub fn add_chat_message(
+    app: AppHandle,
+    pdf_id: String,
+    id: String,
+    role: String,
+    content: String,
+) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let created_at = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO chat_messages (id, pdf_id, role, content, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, pdf_id, role, content, created_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let msg = ChatMessageRow { id, pdf_id, role, content, created_at };
+    serde_json::to_string(&msg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_chat_messages(app: AppHandle, pdf_id: String) -> Result<String, String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, pdf_id, role, content, created_at
+             FROM chat_messages WHERE pdf_id = ?1 ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let messages: Vec<ChatMessageRow> = stmt
+        .query_map(rusqlite::params![pdf_id], |row| {
+            Ok(ChatMessageRow {
+                id:         row.get(0)?,
+                pdf_id:     row.get(1)?,
+                role:       row.get(2)?,
+                content:    row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    serde_json::to_string(&messages).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_chat_messages(app: AppHandle, pdf_id: String) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM chat_messages WHERE pdf_id = ?1", rusqlite::params![pdf_id])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

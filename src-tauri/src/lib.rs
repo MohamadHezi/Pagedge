@@ -1,10 +1,10 @@
 pub mod commands;
 
 use commands::{
-    add_custom_flashcard, add_drawing, add_flashcard, add_highlight, add_pdf, add_text_box,
-    assign_flashcard_deck, create_deck, create_dir_if_not_exists,
+    add_chat_message, add_custom_flashcard, add_drawing, add_flashcard, add_highlight, add_pdf, add_text_box,
+    assign_flashcard_deck, clear_chat_messages, create_deck, create_dir_if_not_exists,
     create_folder, create_note, delete_chunks_for_pdf, delete_deck, delete_drawing, delete_flashcard,
-    delete_folder, delete_highlight, delete_note, delete_pdf, delete_text_box,
+    delete_folder, delete_highlight, delete_note, delete_pdf, delete_text_box, get_chat_messages,
     get_decks, rename_deck,
     export_annotated_pdf, extract_pdf_text,
     get_all_chunks, get_all_flashcards, get_all_highlights, get_app_data_dir, get_chunks_for_pdf, get_drawings,
@@ -24,6 +24,24 @@ use commands::{
 use tauri::Manager;
 
 pub fn run() {
+    // Baked in at compile time via the SENTRY_DSN build env var (set as a
+    // GitHub Actions secret for release builds) — not present locally, so
+    // this stays a no-op in dev. Sentry DSNs are public identifiers (like a
+    // project key), not secrets, so embedding one in the shipped binary is
+    // the normal/expected pattern. Keeping the guard bound to a `_`-prefixed
+    // local (not `_`) keeps it alive for the whole process — the Tauri
+    // builder's `.run()` call below blocks until the app exits.
+    let _sentry_guard = option_env!("SENTRY_DSN").filter(|dsn| !dsn.is_empty()).map(|dsn| {
+        sentry::init((
+            dsn,
+            sentry::ClientOptions {
+                release: sentry::release_name!(),
+                traces_sample_rate: 0.1,
+                ..Default::default()
+            },
+        ))
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -196,6 +214,17 @@ pub fn run() {
                     last_synced_at       TEXT,
                     PRIMARY KEY (entity_type, local_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id         TEXT PRIMARY KEY,
+                    pdf_id     TEXT NOT NULL,
+                    role       TEXT NOT NULL,
+                    content    TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (pdf_id) REFERENCES pdfs(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_pdf ON chat_messages(pdf_id, created_at);
 
                 CREATE TABLE IF NOT EXISTS pending_pdf_annotations (
                     content_hash     TEXT PRIMARY KEY,
@@ -453,6 +482,9 @@ pub fn run() {
             set_setting,
             get_chunks_for_pdf,
             get_all_chunks,
+            add_chat_message,
+            get_chat_messages,
+            clear_chat_messages,
             add_drawing,
             get_drawings,
             delete_drawing,

@@ -41,7 +41,9 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English"]
+        "languages": ["English"],
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
       },
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
