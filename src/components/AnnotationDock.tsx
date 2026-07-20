@@ -2,9 +2,9 @@ import { useStore } from "../store";
 import type { DrawToolType } from "../types";
 
 const DRAW_COLORS = [
+  "#1a1a1a",
   "#ffffff",
   "#ff3b30",
-  "#1a1a1a",
   "#FFD60A",
   "#4DA6FF",
   "#34C759",

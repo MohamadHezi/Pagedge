@@ -949,7 +949,7 @@ export const useStore = create<AppState>((set, get) => ({
   setDrawMode: (on: boolean) => set({ drawMode: on }),
   activeDrawTool: 'pen',
   setActiveDrawTool: (tool) => set({ activeDrawTool: tool, placingTextBox: tool === 'textbox' }),
-  drawColor: '#ffffff',
+  drawColor: '#1a1a1a',
   setDrawColor: (color) => set({ drawColor: color }),
   strokeWidth: 2,
   setStrokeWidth: (w) => set({ strokeWidth: w }),
