@@ -22,8 +22,14 @@ export async function callAI(
   messages: AiMessage[],
   options?: { signal?: AbortSignal }
 ): Promise<string> {
-  const { aiUseCustomProvider } = useStore.getState();
-  return aiUseCustomProvider ? callCustomProvider(messages, options) : callProxy(messages, options);
+  // Custom providers bypass the backend's quota enforcement entirely, so
+  // this is Pro-only — enforced here regardless of the stored setting, not
+  // just at the Settings UI toggle, so a free user (or someone who set it up
+  // before this restriction, or downgraded from Pro) can't route around the
+  // monthly call limit just by leaving an old provider config saved.
+  const { aiUseCustomProvider, user } = useStore.getState();
+  const useCustom = aiUseCustomProvider && user?.tier === 'pro';
+  return useCustom ? callCustomProvider(messages, options) : callProxy(messages, options);
 }
 
 // Power-user path: talk directly to whatever OpenAI-compatible provider the

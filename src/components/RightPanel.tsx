@@ -856,7 +856,6 @@ function ChatView() {
     clearChat,
     jumpToPage,
     user,
-    aiUseCustomProvider,
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -894,9 +893,12 @@ function ChatView() {
     abortRef.current = new AbortController();
 
     try {
-      const chunkLimit = aiUseCustomProvider || user?.tier === 'pro'
-        ? CHAT_CHUNK_LIMIT_FULL
-        : CHAT_CHUNK_LIMIT_FREE;
+      // Custom providers are Pro-only (see aiService.ts's own tier check) —
+      // aiUseCustomProvider alone no longer implies the full budget, since a
+      // free user's saved-but-inactive provider config would otherwise get
+      // an oversized context built here that then gets rejected (or ignored)
+      // once the call actually routes through the metered proxy anyway.
+      const chunkLimit = user?.tier === 'pro' ? CHAT_CHUNK_LIMIT_FULL : CHAT_CHUNK_LIMIT_FREE;
       const { context, chunkCount } = await buildContext(selectedPdfId, text, chunkLimit);
 
       if (chunkCount === 0) {

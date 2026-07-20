@@ -29,7 +29,7 @@ export interface AuthUser {
   resetAt: string | null;
 }
 
-export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro' | 'study_guide_requires_pro' | 'compare_requires_pro';
+export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro' | 'study_guide_requires_pro' | 'compare_requires_pro' | 'custom_provider_requires_pro';
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
 

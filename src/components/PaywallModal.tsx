@@ -25,6 +25,10 @@ const PAYWALL_COPY: Record<PaywallReason, { title: string; body: string }> = {
     title: 'Compare is a Pro feature',
     body: 'AI-powered document comparison finds agreements, differences, and unique points across two documents. Upgrade to Pro to use it.',
   },
+  custom_provider_requires_pro: {
+    title: 'Custom AI providers are a Pro feature',
+    body: 'Using your own Ollama or API-key-based AI provider is a Pro feature. Upgrade to Pro to connect your own provider.',
+  },
 };
 
 export function PaywallModal() {

@@ -45,7 +45,7 @@ export function SettingsPanel() {
     aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
     editorFontSize, editorLineWrap, setUiPrefs,
-    user, signOut, syncStatus, lastSyncedAt,
+    user, signOut, syncStatus, lastSyncedAt, showPaywall,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('account');
@@ -285,13 +285,25 @@ export function SettingsPanel() {
               id="use-custom-provider"
               type="checkbox"
               checked={useCustomProvider}
-              onChange={(e) => setUseCustomProvider(e.target.checked)}
+              onChange={(e) => {
+                if (e.target.checked && user?.tier !== 'pro') {
+                  showPaywall('custom_provider_requires_pro');
+                  return;
+                }
+                setUseCustomProvider(e.target.checked);
+              }}
             />
           </div>
 
           {!useCustomProvider && (
             <p className="settings-feedback">
               AI calls route through Pagedge's built-in AI. Enable this to use your own Ollama or API-key-based provider instead.
+            </p>
+          )}
+
+          {useCustomProvider && user?.tier !== 'pro' && (
+            <p className="settings-feedback settings-feedback--err">
+              Your saved custom provider is inactive while on the Free plan — calls are routing through Pagedge's built-in AI instead. Upgrade to Pro to re-enable it.
             </p>
           )}
 
