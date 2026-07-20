@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis", "msi", "dmg", "app"],
+    "targets": ["nsis", "dmg", "app"],
     "publisher": "Pagedge",
     "category": "Productivity",
     "icon": [
