@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store';
 import { startProCheckout } from '../services/stripeService';
 import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
-import { FREE_TIER_PDF_LIMIT, type PaywallReason } from '../store';
+import type { PaywallReason } from '../store';
 
 const PAYWALL_COPY: Record<PaywallReason, { title: string; body: string }> = {
   context_too_large: {
@@ -16,10 +16,6 @@ const PAYWALL_COPY: Record<PaywallReason, { title: string; body: string }> = {
   quota_exceeded: {
     title: 'Monthly limit reached',
     body: `You've used all ${FREE_TIER_MONTHLY_CALLS} AI calls for this month. Upgrade to Pro for unlimited AI.`,
-  },
-  library_limit: {
-    title: 'Library limit reached',
-    body: `Your free library holds up to ${FREE_TIER_PDF_LIMIT} PDFs. Upgrade to Pro for an unlimited library.`,
   },
   study_guide_requires_pro: {
     title: 'Study guides are a Pro feature',

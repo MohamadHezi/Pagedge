@@ -4,7 +4,6 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useStore } from '../store';
 import { startProCheckout, openBillingPortal } from '../services/stripeService';
 import { FREE_TIER_MONTHLY_CALLS } from '../services/aiService';
-import { FREE_TIER_PDF_LIMIT } from '../store';
 import type { SettingsTab } from '../types';
 
 const PROVIDER_URLS: Record<string, string> = {
@@ -46,7 +45,7 @@ export function SettingsPanel() {
     aiProvider, aiModel, aiBaseUrl, aiApiKey, aiUseCustomProvider,
     setAiSettings,
     editorFontSize, editorLineWrap, setUiPrefs,
-    user, signOut, syncStatus, lastSyncedAt, pdfs,
+    user, signOut, syncStatus, lastSyncedAt,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('account');
@@ -257,13 +256,6 @@ export function SettingsPanel() {
                   <button className="settings-account-signout" onClick={handleUpgrade} disabled={billingBusy}>
                     Upgrade to Pro →
                   </button>
-                </div>
-              )}
-              {user.tier === 'free' && (
-                <div className="settings-account-row">
-                  <span className={`settings-account-quota${pdfs.length >= FREE_TIER_PDF_LIMIT ? ' settings-account-quota--warn' : ''}`}>
-                    {pdfs.length} / {FREE_TIER_PDF_LIMIT} PDFs in your library
-                  </span>
                 </div>
               )}
               <div className="settings-account-row">

@@ -29,14 +29,9 @@ export interface AuthUser {
   resetAt: string | null;
 }
 
-export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro' | 'library_limit' | 'study_guide_requires_pro' | 'compare_requires_pro';
+export type PaywallReason = 'context_too_large' | 'quota_exceeded' | 'sync_requires_pro' | 'study_guide_requires_pro' | 'compare_requires_pro';
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
-
-// Free-tier PDF library cap — doesn't depend on which AI provider a user has
-// configured (unlike the AI-call quota), so it still applies to users who've
-// enabled "Use my own AI provider" and never touch the AI quota gate at all.
-export const FREE_TIER_PDF_LIMIT = 50;
 
 interface AppState {
   // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -500,15 +495,6 @@ export const useStore = create<AppState>((set, get) => ({
   trashedPdfs: [],
 
   addPdf: async (filepath: string): Promise<Pdf> => {
-    const state = get();
-    // add_pdf is idempotent for a filepath already in the library (INSERT OR
-    // IGNORE on the Rust side) — only block genuinely new imports at the cap,
-    // not a re-drop/re-select of a PDF the user already has.
-    const alreadyInLibrary = state.pdfs.some((p) => p.filepath === filepath);
-    if (!alreadyInLibrary && state.user?.tier !== 'pro' && state.pdfs.length >= FREE_TIER_PDF_LIMIT) {
-      state.showPaywall('library_limit');
-      throw new Error('library_limit');
-    }
     const json = await invoke<string>("add_pdf", { filepath });
     const pdf: Pdf = JSON.parse(json);
     set((state) => {
