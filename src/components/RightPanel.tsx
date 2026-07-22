@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import type { Note, ChatMessage, Highlight, RawChunk } from "../types";
 import { HIGHLIGHT_COLORS, HIGHLIGHT_COLOR_KEYS, type HighlightColorKey } from "../constants/highlights";
-import { callAI } from "../services/aiService";
+import { callAI, windowChatHistory } from "../services/aiService";
 import { isStandaloneNote } from "../lib/notes";
 import { embedQuery } from "../services/ingestionService";
 import { bytesToFloat32, cosineSimilarity } from "../utils/embeddings";
@@ -24,6 +24,16 @@ const CHAT_SYSTEM =
 // subject to that cap) keep full 8-chunk retrieval.
 const CHAT_CHUNK_LIMIT_FREE = 4;
 const CHAT_CHUNK_LIMIT_FULL = 8;
+
+// Bounds how many prior turns get resent to the model as conversational
+// memory each new turn. Free tier stays small — CHAT_CHUNK_LIMIT_FREE's
+// document context already sits close to the free-tier char ceiling (see
+// aiService.ts), so there's little headroom left for history. Pro has no
+// client-side char cap, so it can afford a much larger window.
+const CHAT_HISTORY_LIMIT_FREE = 4;   // 2 prior exchanges
+const CHAT_HISTORY_LIMIT_FULL = 12;  // 6 prior exchanges
+const CHAT_HISTORY_CHARS_FREE = 800;
+const CHAT_HISTORY_CHARS_FULL = 4000;
 
 const TAG_SYSTEM =
   'You are a tagging assistant. Read the note and suggest 3-6 relevant tags. ' +
@@ -933,8 +943,16 @@ function ChatView({ paneId }: { paneId: 'A' | 'B' }) {
         ? `Document context:\n\n${context}\n\nQuestion: ${text}`
         : text;
 
+      // `chatMessages` here is still the closure's pre-send snapshot (from
+      // before `addChatMessage(userMsg)` above) — it correctly excludes the
+      // question we're about to ask.
+      const historyLimit = user?.tier === 'pro' ? CHAT_HISTORY_LIMIT_FULL : CHAT_HISTORY_LIMIT_FREE;
+      const historyChars = user?.tier === 'pro' ? CHAT_HISTORY_CHARS_FULL : CHAT_HISTORY_CHARS_FREE;
+      const history = windowChatHistory(chatMessages, historyLimit, historyChars);
+
       const messages = [
         { role: 'system' as const, content: CHAT_SYSTEM },
+        ...history,
         { role: 'user'   as const, content: userContent },
       ];
       console.log('[chat] sending to AI — chunkCount:', chunkCount,

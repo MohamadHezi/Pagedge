@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { MathMarkdown } from './MathMarkdown';
 import { useStore } from '../store';
-import { callAI } from '../services/aiService';
+import { callAI, windowChatHistory } from '../services/aiService';
 import { buildGlobalContext, buildLibraryListing, extractCitations } from '../services/globalChatService';
 import type { ChatCitation } from '../types';
 
 const GLOBAL_CHAT_SYSTEM = `You are a research assistant with access to the user's entire PDF library. You are given a full list of every document in the library, plus a handful of content excerpts retrieved for this specific question. The excerpt list is not exhaustive — if asked what's in the library, use the library list, not just the excerpts. Each excerpt is tagged with a source id like [S1], [S2] and a page number. When you reference information from an excerpt, cite it inline in the form [S1 p.4] (source tag + page). Be concise and direct. If the excerpts don't contain the answer to a content question, say so. Write any mathematical notation as LaTeX: $...$ for inline math, $$...$$ for display equations.`;
+
+// Same tier-aware history budget as RightPanel.tsx's Chat with PDF — Global
+// Chat's calls go through the identical free-tier char-budget gate in
+// aiService.ts's callProxy, so free tier stays small.
+const GLOBAL_CHAT_HISTORY_LIMIT_FREE = 4;
+const GLOBAL_CHAT_HISTORY_LIMIT_FULL = 12;
+const GLOBAL_CHAT_HISTORY_CHARS_FREE = 800;
+const GLOBAL_CHAT_HISTORY_CHARS_FULL = 4000;
 
 function shortName(filename: string): string {
   return filename.replace(/\.pdf$/i, '');
@@ -13,7 +21,7 @@ function shortName(filename: string): string {
 
 export function GlobalChatView() {
   const {
-    isAuthenticated, requireAuth,
+    isAuthenticated, requireAuth, user,
     pdfs, jumpToPage, selectPdf, setPendingJumpPage, selectedPdfId,
     globalChatMessages, addGlobalChatMessage, clearGlobalChat,
     isGlobalChatLoading, setGlobalChatLoading,
@@ -61,8 +69,17 @@ export function GlobalChatView() {
       const userContent = contextParts.length > 0
         ? `${contextParts.join('\n\n')}\n\nQuestion: ${text}`
         : text;
+
+      // `globalChatMessages` here is still the closure's pre-send snapshot
+      // (from before `addGlobalChatMessage(userMsg)` above) — it correctly
+      // excludes the question we're about to ask.
+      const historyLimit = user?.tier === 'pro' ? GLOBAL_CHAT_HISTORY_LIMIT_FULL : GLOBAL_CHAT_HISTORY_LIMIT_FREE;
+      const historyChars = user?.tier === 'pro' ? GLOBAL_CHAT_HISTORY_CHARS_FULL : GLOBAL_CHAT_HISTORY_CHARS_FREE;
+      const history = windowChatHistory(globalChatMessages, historyLimit, historyChars);
+
       const messages = [
         { role: 'system' as const, content: GLOBAL_CHAT_SYSTEM },
+        ...history,
         { role: 'user' as const, content: userContent },
       ];
       const response = await callAI(messages, { signal: abortRef.current.signal });

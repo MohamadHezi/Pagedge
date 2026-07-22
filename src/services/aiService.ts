@@ -18,6 +18,29 @@ function totalChars(messages: AiMessage[]): number {
   return messages.reduce((sum, m) => sum + m.content.length, 0);
 }
 
+export interface HistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+// Bounds how much prior conversation gets resent to the model each turn:
+// slices to the last `maxMessages`, then trims oldest-first until under
+// `maxChars`. Keeps prompt size — and therefore free-tier context-limit
+// risk — flat regardless of how long the overall conversation has grown.
+export function windowChatHistory(
+  history: HistoryMessage[],
+  maxMessages: number,
+  maxChars: number
+): HistoryMessage[] {
+  let windowed = history.slice(-maxMessages);
+  let chars = windowed.reduce((sum, m) => sum + m.content.length, 0);
+  while (chars > maxChars && windowed.length > 0) {
+    chars -= windowed[0].content.length;
+    windowed = windowed.slice(1);
+  }
+  return windowed.map(m => ({ role: m.role, content: m.content }));
+}
+
 export async function callAI(
   messages: AiMessage[],
   options?: { signal?: AbortSignal }
