@@ -1,6 +1,6 @@
 {
   "productName": "Pagedge",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "identifier": "com.pagedge.app",
   "build": {
     "frontendDist": "../dist",
