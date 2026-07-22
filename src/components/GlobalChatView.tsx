@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { MathMarkdown } from './MathMarkdown';
 import { useStore } from '../store';
 import { callAI } from '../services/aiService';
 import { buildGlobalContext, buildLibraryListing, extractCitations } from '../services/globalChatService';
 import type { ChatCitation } from '../types';
 
-const GLOBAL_CHAT_SYSTEM = `You are a research assistant with access to the user's entire PDF library. You are given a full list of every document in the library, plus a handful of content excerpts retrieved for this specific question. The excerpt list is not exhaustive — if asked what's in the library, use the library list, not just the excerpts. Each excerpt is tagged with a source id like [S1], [S2] and a page number. When you reference information from an excerpt, cite it inline in the form [S1 p.4] (source tag + page). Be concise and direct. If the excerpts don't contain the answer to a content question, say so.`;
+const GLOBAL_CHAT_SYSTEM = `You are a research assistant with access to the user's entire PDF library. You are given a full list of every document in the library, plus a handful of content excerpts retrieved for this specific question. The excerpt list is not exhaustive — if asked what's in the library, use the library list, not just the excerpts. Each excerpt is tagged with a source id like [S1], [S2] and a page number. When you reference information from an excerpt, cite it inline in the form [S1 p.4] (source tag + page). Be concise and direct. If the excerpts don't contain the answer to a content question, say so. Write any mathematical notation as LaTeX: $...$ for inline math, $$...$$ for display equations.`;
 
 function shortName(filename: string): string {
   return filename.replace(/\.pdf$/i, '');
@@ -23,10 +24,21 @@ export function GlobalChatView() {
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [globalChatMessages, isGlobalChatLoading]);
+
+  // Auto-grow the composer for multi-line messages (Shift+Enter for a
+  // newline, Enter to send) — re-measured on every value change, including
+  // the reset back to '' after sending, so it shrinks back down too.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   const handleSend = async () => {
     if (!isAuthenticated) return requireAuth('Sign in to chat across your library', () => handleSend());
@@ -111,7 +123,9 @@ export function GlobalChatView() {
         )}
         {globalChatMessages.map((msg) => (
           <div key={msg.id} className={`chat-message chat-message--${msg.role}`}>
-            <div className="chat-bubble">{msg.content}</div>
+            <div className="chat-bubble" data-color-mode="dark">
+              <MathMarkdown source={msg.content} className="chat-bubble-md" breaks />
+            </div>
             {msg.citations && msg.citations.length > 0 && (
               <div className="chat-citations">
                 {msg.citations.map((c) => (
@@ -139,13 +153,15 @@ export function GlobalChatView() {
       </div>
 
       <div className="chat-input-row">
-        <input
+        <textarea
+          ref={textareaRef}
           className="chat-input"
           placeholder="Ask across your library…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
           disabled={isGlobalChatLoading}
+          rows={1}
         />
         <button
           className="chat-send-btn"

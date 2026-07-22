@@ -3,6 +3,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { useStore } from '../store';
 import type { PageText } from '../types';
 import { readPdfBytes } from './pdfBytesCache';
+import { rasterizePage } from './pdfRasterize';
+import { ocrPage, isOcrDisabled } from './ocrService';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +28,7 @@ function yieldToMainThread(): Promise<void> {
 // strings for many PDFs that PDF.js renders correctly. We use the same engine
 // the viewer already uses so extraction is always consistent with what the user sees.
 
-async function extractTextWithPdfJs(filepath: string): Promise<PageText[]> {
+async function extractTextWithPdfJs(pdfId: string, filepath: string): Promise<PageText[]> {
   if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   }
@@ -42,6 +44,7 @@ async function extractTextWithPdfJs(filepath: string): Promise<PageText[]> {
   console.log('[ingest] PDF.js loaded', pdf.numPages, 'pages from', filepath);
 
   const pages: PageText[] = [];
+  const emptyPageIndices: number[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
@@ -54,8 +57,40 @@ async function extractTextWithPdfJs(filepath: string): Promise<PageText[]> {
       })
       .join('');
     pages.push({ page: i, text });
+    if (!text.trim()) emptyPageIndices.push(i);
 
     if (i % YIELD_EVERY_N_PAGES === 0) await yieldToMainThread();
+  }
+
+  // Second pass — OCR only the pages that had no embedded text (a scanned/
+  // image-only page, or a genuinely blank one). Per-page, so a document
+  // that's part-native-text/part-scanned only pays the OCR cost where
+  // actually needed. If the OCR engine is (or becomes) unavailable this
+  // session, ocrPage() resolves to '' — identical to today's pre-OCR
+  // behavior for a page that can't be read, not a hard failure.
+  if (emptyPageIndices.length > 0 && !isOcrDisabled()) {
+    const store = useStore.getState();
+    store.setIngestionStatus(pdfId, 'ocr');
+    store.setOcrProgress(pdfId, { done: 0, total: emptyPageIndices.length });
+
+    for (let j = 0; j < emptyPageIndices.length; j++) {
+      const pageNum = emptyPageIndices[j];
+      try {
+        const image = await rasterizePage(pdf, pageNum);
+        const ocrText = await ocrPage(image);
+        if (ocrText.trim()) {
+          const entry = pages.find((p) => p.page === pageNum);
+          if (entry) entry.text = ocrText;
+        }
+      } catch (err) {
+        console.error('[ingest] OCR failed for page', pageNum, err);
+      }
+      useStore.getState().setOcrProgress(pdfId, { done: j + 1, total: emptyPageIndices.length });
+
+      if ((j + 1) % YIELD_EVERY_N_PAGES === 0) await yieldToMainThread();
+    }
+
+    useStore.getState().setOcrProgress(pdfId, null);
   }
 
   const totalChars = pages.reduce((s, p) => s + p.text.length, 0);
@@ -286,10 +321,12 @@ export async function embedQuery(text: string): Promise<Float32Array> {
 export async function ingestPdf(pdfId: string, filepath: string): Promise<void> {
   const store = useStore.getState();
   store.setIngestionStatus(pdfId, 'indexing');
+  const ocrWasDisabledBefore = isOcrDisabled();
 
   try {
-    // 1. Extract text page-by-page via PDF.js (same engine as the reader)
-    const pageTexts = await extractTextWithPdfJs(filepath);
+    // 1. Extract text page-by-page via PDF.js (same engine as the reader),
+    // OCR-ing any pages that come back empty.
+    const pageTexts = await extractTextWithPdfJs(pdfId, filepath);
 
     // 2. Chunk
     const chunks = await chunkPageTexts(pageTexts);
@@ -297,7 +334,14 @@ export async function ingestPdf(pdfId: string, filepath: string): Promise<void> 
 
     if (chunks.length === 0) {
       await invoke('update_pdf_ingestion_status', { pdfId, chunkCount: 0 });
-      store.setIngestionStatus(pdfId, 'done');
+      // If the OCR engine just broke *during this run* (not already known
+      // broken from an earlier document) and this document ended up with
+      // nothing to show for it, surface that as an error rather than a
+      // checkmark that quietly reverts a few seconds later — a more honest
+      // signal than today's silent "done, 0 chunks" for a document that
+      // genuinely needed OCR to work.
+      const ocrBrokeThisRun = !ocrWasDisabledBefore && isOcrDisabled();
+      store.setIngestionStatus(pdfId, ocrBrokeThisRun ? 'error' : 'done');
       scheduleClear(pdfId);
       return;
     }

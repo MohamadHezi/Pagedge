@@ -5,6 +5,83 @@ import type { HighlightColorKey } from "../constants/highlights";
 import { resolveSession, signOut as signOutApi, loadSession, getMe, saveSessionTokens } from "../services/authService";
 import { schedulePush, pullPdf, checkPendingAnnotationsForHash, retryPushIfPending, clearPullCursor } from "../services/syncService";
 
+// ── Split view (pane B) ──────────────────────────────────────────────────────
+// Pane A is intentionally left as-is: every existing flat "current document"
+// field (highlights, notes, drawings, textBoxes, flashcards, chatMessages,
+// outline, currentPage, jumpToPage, etc.) IS pane A's state, unchanged, so
+// every existing consumer of those fields keeps working with zero changes
+// as long as pane B is never opened. Pane B is purely additive: a second,
+// parallel slice with its own copies of the same per-document fields, plus
+// a "B-flavored" action for each existing pane-A action. PdfViewer/RightPanel
+// pick which flavor to bind to based on which pane they represent — see
+// PdfViewer's `paneId` prop. This keeps single-pane mode's behavior
+// byte-for-byte identical (the whole point of doing this incrementally)
+// while still giving pane B a fully independent, non-clobbering set of
+// per-document state to render from.
+//
+// AI-overlay results (Summarize/Study Guide/Compare/tag-suggest) are
+// deliberately NOT duplicated per pane — they stay single global overlays as
+// today. Triggering one of those from pane B while pane A also has a result
+// showing will share the same overlay, exactly like today's single-pane
+// behavior. This is a scoped-down trim from the original plan: the live
+// viewing/annotation experience (scrolling, highlighting, drawing, notes,
+// chat, outline) is fully pane-isolated; the occasional one-shot AI-summary
+// overlays are not, since duplicating them adds a lot of surface for a
+// low-frequency, non-simultaneous interaction.
+export interface PaneBState {
+  pdfId: string;
+  currentPage: number;
+  pendingJumpPage: number | null;
+  jumpToPage: ((page: number) => void) | null;
+  highlights: Highlight[];
+  activeLens: LensKey;
+  notes: Note[];
+  selectedNoteId: string | null;
+  drawings: Drawing[];
+  drawMode: boolean;
+  textBoxes: TextBox[];
+  selectedTextBoxId: string | null;
+  placingTextBox: boolean;
+  editingTextBoxId: string | null;
+  flashcards: Flashcard[];
+  chatMessages: ChatMessage[];
+  isAiLoading: boolean;
+  outline: OutlineItem[];
+  outlineLoading: boolean;
+  expandedOutlineIds: Set<string>;
+  isOutlineSectionExpanded: boolean;
+  outlineAttempted: boolean;
+  requestOutlineExtraction: (() => void) | null;
+}
+
+function emptyPaneB(pdfId: string): PaneBState {
+  return {
+    pdfId,
+    currentPage: 1,
+    pendingJumpPage: null,
+    jumpToPage: null,
+    highlights: [],
+    activeLens: "default",
+    notes: [],
+    selectedNoteId: null,
+    drawings: [],
+    drawMode: false,
+    textBoxes: [],
+    selectedTextBoxId: null,
+    placingTextBox: false,
+    editingTextBoxId: null,
+    flashcards: [],
+    chatMessages: [],
+    isAiLoading: false,
+    outline: [],
+    outlineLoading: false,
+    expandedOutlineIds: new Set(),
+    isOutlineSectionExpanded: false,
+    outlineAttempted: false,
+    requestOutlineExtraction: null,
+  };
+}
+
 export interface RemoteOnlyPdf {
   content_hash: string;
   display_name: string | null;
@@ -93,6 +170,7 @@ interface AppState {
   selectPdf: (id: string | null) => void;
   loadPdfs: () => Promise<void>;
   updatePdfChunkCount: (pdfId: string, chunkCount: number) => void;
+  updatePdfLastPage: (pdfId: string, page: number) => void;
 
   // ── Trash (soft-delete) ──────────────────────────────────────────────────────
   trashedPdfs: Pdf[];
@@ -164,6 +242,10 @@ interface AppState {
   isModelLoading: boolean;
   setIngestionStatus: (pdfId: string, status: IngestionStatus | null) => void;
   setModelLoading: (loading: boolean) => void;
+  // Per-pdf OCR page progress — mirrors generationProgress's {done,total}
+  // shape. Only populated while ingestionStatus[pdfId] === 'ocr'.
+  ocrProgress: Record<string, { done: number; total: number }>;
+  setOcrProgress: (pdfId: string, progress: { done: number; total: number } | null) => void;
 
   // ── AI settings ───────────────────────────────────────────────────────────────
   aiProvider: string;
@@ -224,22 +306,33 @@ interface AppState {
 
   // ── Export ────────────────────────────────────────────────────────────────────
   exportDialogOpen: boolean;
-  setExportDialogOpen: (open: boolean) => void;
+  // Which pdfId to export — ExportDialog is a single shared overlay, and with
+  // split view active either pane's toolbar can open it, so the pdfId must
+  // be captured explicitly at open time rather than assumed to be pane A's
+  // selectedPdfId.
+  exportDialogPdfId: string | null;
+  setExportDialogOpen: (open: boolean, pdfId?: string) => void;
   pendingJumpPage: number | null;
   setPendingJumpPage: (page: number | null) => void;
 
   // ── Summary ───────────────────────────────────────────────────────────────────
   summaryContent: string | null;
   summaryLens: LensKey | null;
+  // Which pdfId this summary belongs to — these AI-overlay results are
+  // deliberately NOT duplicated per pane (see PaneBState's design note), but
+  // "save as note" still needs to attribute the note to the pane that
+  // actually generated it rather than always assuming pane A.
+  summaryPdfId: string | null;
   isSummarizing: boolean;
-  setSummary: (content: string | null, lens: LensKey | null) => void;
+  setSummary: (content: string | null, lens: LensKey | null, pdfId?: string) => void;
   clearSummary: () => void;
   setIsSummarizing: (loading: boolean) => void;
 
   // ── Study guide (Pro) ────────────────────────────────────────────────────────
   studyGuideContent: string | null;
+  studyGuidePdfId: string | null;
   isGeneratingStudyGuide: boolean;
-  setStudyGuide: (content: string | null) => void;
+  setStudyGuide: (content: string | null, pdfId?: string) => void;
   clearStudyGuide: () => void;
   setIsGeneratingStudyGuide: (loading: boolean) => void;
 
@@ -247,9 +340,12 @@ interface AppState {
   comparePickerOpen: boolean;
   setComparePickerOpen: (open: boolean) => void;
   compareTargetPdfId: string | null;
+  // Which pdfId is "document A" of this comparison (the pane that opened
+  // the picker) — same reasoning as summaryPdfId/studyGuidePdfId above.
+  comparePdfId: string | null;
   compareContent: string | null;
   isComparing: boolean;
-  setCompareResult: (targetPdfId: string | null, content: string | null) => void;
+  setCompareResult: (targetPdfId: string | null, content: string | null, sourcePdfId?: string) => void;
   clearCompare: () => void;
   setIsComparing: (loading: boolean) => void;
 
@@ -386,6 +482,64 @@ interface AppState {
   // reference to the PDF.js document.
   requestOutlineExtraction: (() => void) | null;
   setRequestOutlineExtraction: (fn: (() => void) | null) => void;
+
+  // ── Split view (pane B) — see PaneBState comment above for the design note ──
+  focusedPane: 'A' | 'B';
+  focusPane: (paneId: 'A' | 'B') => void;
+  paneB: PaneBState | null;
+  openPaneB: (pdfId: string) => void;
+  closePaneB: () => void;
+  // Closing pane A while pane B is open: pane B's state moves into pane A's
+  // slot rather than pane A just vanishing, so "pane A" stays the always-
+  // present slot and the UI collapses cleanly to single-pane mode.
+  promoteBToA: () => void;
+
+  selectPdfB: (id: string) => void;
+
+  loadHighlightsB: (pdfId: string) => Promise<void>;
+  addHighlightB: (h: Highlight) => void;
+  removeHighlightB: (id: string) => void;
+  setActiveLensB: (lens: LensKey) => void;
+
+  loadNotesB: (pdfId: string) => Promise<void>;
+  addNoteB: (note: Note) => void;
+  updateNoteB: (id: string, changes: Partial<Note>) => void;
+  removeNoteB: (id: string) => void;
+  setSelectedNoteIdB: (id: string | null) => void;
+  setCurrentPageB: (page: number) => void;
+  setJumpToPageB: (fn: ((page: number) => void) | null) => void;
+  setPendingJumpPageB: (page: number | null) => void;
+
+  loadDrawingsB: (pdfId: string) => Promise<void>;
+  addDrawingB: (d: Drawing) => void;
+  removeDrawingB: (id: string) => void;
+  setDrawModeB: (on: boolean) => void;
+
+  loadTextBoxesB: (pdfId: string) => Promise<void>;
+  addTextBoxB: (tb: TextBox) => void;
+  updateTextBoxLocalB: (id: string, changes: Partial<TextBox>) => void;
+  removeTextBoxB: (id: string) => void;
+  setSelectedTextBoxIdB: (id: string | null) => void;
+  setPlacingTextBoxB: (on: boolean) => void;
+  setEditingTextBoxIdB: (id: string | null) => void;
+
+  loadFlashcardsB: (pdfId: string) => Promise<void>;
+  addFlashcardB: (f: Flashcard) => void;
+  removeFlashcardB: (id: string) => void;
+  updateFlashcardLocalB: (id: string, changes: Partial<Flashcard>) => void;
+
+  loadChatMessagesB: (pdfId: string) => Promise<void>;
+  addChatMessageB: (msg: ChatMessage) => void;
+  clearChatB: () => void;
+  setAiLoadingB: (loading: boolean) => void;
+
+  setOutlineB: (items: OutlineItem[]) => void;
+  loadOutlineB: (pdfId: string) => Promise<void>;
+  setOutlineLoadingB: (loading: boolean) => void;
+  toggleOutlineExpandedB: (id: string) => void;
+  setOutlineSectionExpandedB: (expanded: boolean) => void;
+  setOutlineAttemptedB: (attempted: boolean) => void;
+  setRequestOutlineExtractionB: (fn: (() => void) | null) => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -527,6 +681,13 @@ export const useStore = create<AppState>((set, get) => ({
       pdfs: state.pdfs.filter((p) => p.id !== id),
       trashedPdfs: state.trashedPdfs.filter((p) => p.id !== id),
       selectedPdfId: state.selectedPdfId === id ? null : state.selectedPdfId,
+      // A deleted PDF can't stay "open" in pane B either — leaving paneB
+      // pointing at a now-gone pdfId would strand the tab bar (paneBPdf
+      // lookup fails, so the second tab silently disappears but paneB
+      // itself never gets nulled, blocking both the "+" button and any
+      // future openPaneB call).
+      paneB: state.paneB?.pdfId === id ? null : state.paneB,
+      focusedPane: state.paneB?.pdfId === id && state.focusedPane === 'B' ? 'A' : state.focusedPane,
     }));
   },
 
@@ -540,6 +701,8 @@ export const useStore = create<AppState>((set, get) => ({
     set((state) => ({
       pdfs: state.pdfs.filter((p) => p.id !== id),
       selectedPdfId: state.selectedPdfId === id ? null : state.selectedPdfId,
+      paneB: state.paneB?.pdfId === id ? null : state.paneB,
+      focusedPane: state.paneB?.pdfId === id && state.focusedPane === 'B' ? 'A' : state.focusedPane,
     }));
   },
 
@@ -560,6 +723,13 @@ export const useStore = create<AppState>((set, get) => ({
     set((state) => ({
       pdfs: state.pdfs.map((p) =>
         p.id === pdfId ? { ...p, chunk_count: chunkCount } : p
+      ),
+    })),
+
+  updatePdfLastPage: (pdfId: string, page: number) =>
+    set((state) => ({
+      pdfs: state.pdfs.map((p) =>
+        p.id === pdfId ? { ...p, last_page: page } : p
       ),
     })),
 
@@ -651,9 +821,24 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   selectPdf: (id) => {
-    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, chatMessages: [], summaryContent: null, summaryLens: null, isSummarizing: false, studyGuideContent: null, isGeneratingStudyGuide: false, comparePickerOpen: false, compareTargetPdfId: null, compareContent: null, isComparing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false });
+    // If this document is already open in pane B, just focus that pane
+    // instead of opening a second, redundant copy in pane A — the same pdf
+    // open in both panes isn't useful and would create ambiguity over which
+    // pane "owns" highlight/note events for it.
+    if (id && useStore.getState().paneB?.pdfId === id) {
+      useStore.getState().focusPane('B');
+      return;
+    }
+
+    // If a caller (search, flashcard/graph "jump to source", etc.) already
+    // requested a specific page via setPendingJumpPage right before calling
+    // selectPdf, that request wins. Otherwise, resume wherever this PDF was
+    // last scrolled to instead of always restarting at page 1.
+    const prevPending = useStore.getState().pendingJumpPage;
+    const pdf = id ? useStore.getState().pdfs.find((p) => p.id === id) : null;
+    const resumePage = prevPending ?? (pdf && pdf.last_page > 1 ? pdf.last_page : null);
+    set({ selectedPdfId: id, selectedNoteId: null, currentPage: 1, pendingJumpPage: resumePage, chatMessages: [], summaryContent: null, summaryLens: null, summaryPdfId: null, isSummarizing: false, studyGuideContent: null, studyGuidePdfId: null, isGeneratingStudyGuide: false, comparePickerOpen: false, compareTargetPdfId: null, comparePdfId: null, compareContent: null, isComparing: false, drawings: [], drawMode: false, textBoxes: [], selectedTextBoxId: null, placingTextBox: false, editingTextBoxId: null, flashcards: [], activeTagFilter: null, suggestedTags: [], outline: [], outlineLoading: false, expandedOutlineIds: new Set(), isOutlineSectionExpanded: false, outlineAttempted: false, requestOutlineExtraction: null, graphViewOpen: false, deckManagerOpen: false, globalChatOpen: false, trashViewOpen: false, noteWorkspaceOpen: false, focusedPane: 'A' });
     if (id) {
-      const pdf = useStore.getState().pdfs.find((p) => p.id === id);
       if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
       useStore.getState().loadChatMessages(id).catch((err) => console.error('[chat] failed to load history', err));
     }
@@ -777,6 +962,18 @@ export const useStore = create<AppState>((set, get) => ({
     }),
   setModelLoading: (loading) => set({ isModelLoading: loading }),
 
+  ocrProgress: {},
+  setOcrProgress: (pdfId, progress) =>
+    set((state) => {
+      const next = { ...state.ocrProgress };
+      if (progress === null) {
+        delete next[pdfId];
+      } else {
+        next[pdfId] = progress;
+      }
+      return { ocrProgress: next };
+    }),
+
   // ── AI settings ───────────────────────────────────────────────────────────────
   aiProvider: 'ollama',
   aiModel: 'llama3.2',
@@ -891,31 +1088,42 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ── Export ────────────────────────────────────────────────────────────────────
   exportDialogOpen: false,
-  setExportDialogOpen: (open) => set({ exportDialogOpen: open }),
+  exportDialogPdfId: null,
+  setExportDialogOpen: (open, pdfId) =>
+    set((state) => ({
+      exportDialogOpen: open,
+      exportDialogPdfId: open ? (pdfId ?? state.selectedPdfId) : state.exportDialogPdfId,
+    })),
   pendingJumpPage: null,
   setPendingJumpPage: (page) => set({ pendingJumpPage: page }),
 
   // ── Summary ───────────────────────────────────────────────────────────────────
   summaryContent: null,
   summaryLens: null,
+  summaryPdfId: null,
   isSummarizing: false,
-  setSummary: (content, lens) => set({ summaryContent: content, summaryLens: lens }),
-  clearSummary: () => set({ summaryContent: null, summaryLens: null, isSummarizing: false }),
+  setSummary: (content, lens, pdfId) =>
+    set((state) => ({ summaryContent: content, summaryLens: lens, summaryPdfId: pdfId ?? state.summaryPdfId })),
+  clearSummary: () => set({ summaryContent: null, summaryLens: null, summaryPdfId: null, isSummarizing: false }),
   setIsSummarizing: (loading) => set({ isSummarizing: loading }),
 
   studyGuideContent: null,
+  studyGuidePdfId: null,
   isGeneratingStudyGuide: false,
-  setStudyGuide: (content) => set({ studyGuideContent: content }),
-  clearStudyGuide: () => set({ studyGuideContent: null, isGeneratingStudyGuide: false }),
+  setStudyGuide: (content, pdfId) =>
+    set((state) => ({ studyGuideContent: content, studyGuidePdfId: pdfId ?? state.studyGuidePdfId })),
+  clearStudyGuide: () => set({ studyGuideContent: null, studyGuidePdfId: null, isGeneratingStudyGuide: false }),
   setIsGeneratingStudyGuide: (loading) => set({ isGeneratingStudyGuide: loading }),
 
   comparePickerOpen: false,
   setComparePickerOpen: (open) => set({ comparePickerOpen: open }),
   compareTargetPdfId: null,
+  comparePdfId: null,
   compareContent: null,
   isComparing: false,
-  setCompareResult: (targetPdfId, content) => set({ compareTargetPdfId: targetPdfId, compareContent: content }),
-  clearCompare: () => set({ compareTargetPdfId: null, compareContent: null, isComparing: false }),
+  setCompareResult: (targetPdfId, content, sourcePdfId) =>
+    set((state) => ({ compareTargetPdfId: targetPdfId, compareContent: content, comparePdfId: sourcePdfId ?? state.comparePdfId })),
+  clearCompare: () => set({ compareTargetPdfId: null, comparePdfId: null, compareContent: null, isComparing: false }),
   setIsComparing: (loading) => set({ isComparing: loading }),
 
   // ── Right panel ───────────────────────────────────────────────────────────────
@@ -1160,6 +1368,224 @@ export const useStore = create<AppState>((set, get) => ({
   setOutlineAttempted: (attempted) => set({ outlineAttempted: attempted }),
   requestOutlineExtraction: null,
   setRequestOutlineExtraction: (fn) => set({ requestOutlineExtraction: fn }),
+
+  // ── Split view (pane B) ──────────────────────────────────────────────────────
+  focusedPane: 'A',
+  focusPane: (paneId) => set({ focusedPane: paneId }),
+  paneB: null,
+
+  openPaneB: (pdfId) => {
+    // Already open in pane A — just focus it rather than opening a second
+    // copy in pane B (mirrors the symmetric check in selectPdf).
+    if (useStore.getState().selectedPdfId === pdfId) {
+      set({ focusedPane: 'A' });
+      return;
+    }
+    const pdf = useStore.getState().pdfs.find((p) => p.id === pdfId);
+    const base = emptyPaneB(pdfId);
+    const resumePage = pdf && pdf.last_page > 1 ? pdf.last_page : null;
+    set({ paneB: { ...base, pendingJumpPage: resumePage }, focusedPane: 'B' });
+    if (pdf?.content_hash) pullPdf(pdf.content_hash).catch((err) => console.error('[sync] pull on open failed', err));
+    useStore.getState().loadChatMessagesB(pdfId).catch((err) => console.error('[chat] failed to load history', err));
+  },
+
+  closePaneB: () =>
+    set((state) => ({
+      paneB: null,
+      focusedPane: state.focusedPane === 'B' ? 'A' : state.focusedPane,
+    })),
+
+  promoteBToA: () =>
+    set((state) => {
+      const b = state.paneB;
+      if (!b) return state;
+      return {
+        selectedPdfId: b.pdfId,
+        currentPage: b.currentPage,
+        pendingJumpPage: b.pendingJumpPage,
+        jumpToPage: b.jumpToPage,
+        highlights: b.highlights,
+        activeLens: b.activeLens,
+        notes: b.notes,
+        selectedNoteId: b.selectedNoteId,
+        drawings: b.drawings,
+        drawMode: b.drawMode,
+        textBoxes: b.textBoxes,
+        selectedTextBoxId: b.selectedTextBoxId,
+        placingTextBox: b.placingTextBox,
+        editingTextBoxId: b.editingTextBoxId,
+        flashcards: b.flashcards,
+        chatMessages: b.chatMessages,
+        isAiLoading: b.isAiLoading,
+        outline: b.outline,
+        outlineLoading: b.outlineLoading,
+        expandedOutlineIds: b.expandedOutlineIds,
+        isOutlineSectionExpanded: b.isOutlineSectionExpanded,
+        outlineAttempted: b.outlineAttempted,
+        requestOutlineExtraction: b.requestOutlineExtraction,
+        paneB: null,
+        focusedPane: 'A',
+      };
+    }),
+
+  selectPdfB: (id) => {
+    const state = useStore.getState();
+    if (!state.paneB) return;
+    state.openPaneB(id);
+  },
+
+  loadHighlightsB: async (pdfId) => {
+    const json = await invoke<string>("get_highlights", { pdfId });
+    const highlights: Highlight[] = JSON.parse(json);
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, highlights } } : state));
+  },
+  addHighlightB: (h) => {
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, highlights: [...state.paneB.highlights, h] } } : state));
+    schedulePush(h.pdf_id);
+  },
+  removeHighlightB: (id) =>
+    set((state) => {
+      if (!state.paneB) return state;
+      const removed = state.paneB.highlights.find((h) => h.id === id);
+      if (removed) schedulePush(removed.pdf_id);
+      return { paneB: { ...state.paneB, highlights: state.paneB.highlights.filter((h) => h.id !== id) } };
+    }),
+  setActiveLensB: (lens) => set((state) => (state.paneB ? { paneB: { ...state.paneB, activeLens: lens } } : state)),
+
+  loadNotesB: async (pdfId) => {
+    const json = await invoke<string>("get_notes", { pdfId });
+    const notes: Note[] = JSON.parse(json);
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, notes } } : state));
+  },
+  addNoteB: (note) => {
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, notes: [note, ...state.paneB.notes] } } : state));
+    if (note.source_pdf_id) schedulePush(note.source_pdf_id);
+  },
+  updateNoteB: (id, changes) =>
+    set((state) => {
+      if (!state.paneB) return state;
+      const updated = state.paneB.notes.map((n) => (n.id === id ? { ...n, ...changes } : n));
+      const note = updated.find((n) => n.id === id);
+      if (note?.source_pdf_id) schedulePush(note.source_pdf_id);
+      return { paneB: { ...state.paneB, notes: updated } };
+    }),
+  removeNoteB: (id) =>
+    set((state) => {
+      if (!state.paneB) return state;
+      const removed = state.paneB.notes.find((n) => n.id === id);
+      if (removed?.source_pdf_id) schedulePush(removed.source_pdf_id);
+      return { paneB: { ...state.paneB, notes: state.paneB.notes.filter((n) => n.id !== id) } };
+    }),
+  setSelectedNoteIdB: (id) => set((state) => (state.paneB ? { paneB: { ...state.paneB, selectedNoteId: id } } : state)),
+  setCurrentPageB: (page) => set((state) => (state.paneB ? { paneB: { ...state.paneB, currentPage: page } } : state)),
+  setJumpToPageB: (fn) => set((state) => (state.paneB ? { paneB: { ...state.paneB, jumpToPage: fn } } : state)),
+  setPendingJumpPageB: (page) => set((state) => (state.paneB ? { paneB: { ...state.paneB, pendingJumpPage: page } } : state)),
+
+  loadDrawingsB: async (pdfId) => {
+    const json = await invoke<string>('get_drawings', { pdfId });
+    const raw: any[] = JSON.parse(json);
+    const drawings: Drawing[] = raw.map((d) => ({
+      ...d,
+      points: typeof d.points === 'string' ? JSON.parse(d.points) : d.points,
+    }));
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, drawings } } : state));
+  },
+  addDrawingB: (d) => set((state) => (state.paneB ? { paneB: { ...state.paneB, drawings: [...state.paneB.drawings, d] } } : state)),
+  removeDrawingB: (id) => set((state) => (state.paneB ? { paneB: { ...state.paneB, drawings: state.paneB.drawings.filter((d) => d.id !== id) } } : state)),
+  setDrawModeB: (on) => set((state) => (state.paneB ? { paneB: { ...state.paneB, drawMode: on } } : state)),
+
+  loadTextBoxesB: async (pdfId) => {
+    const json = await invoke<string>('get_text_boxes', { pdfId });
+    const textBoxes: TextBox[] = JSON.parse(json);
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, textBoxes } } : state));
+  },
+  addTextBoxB: (tb) => set((state) => (state.paneB ? { paneB: { ...state.paneB, textBoxes: [...state.paneB.textBoxes, tb] } } : state)),
+  updateTextBoxLocalB: (id, changes) =>
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, textBoxes: state.paneB.textBoxes.map((tb) => (tb.id === id ? { ...tb, ...changes } : tb)) } } : state)),
+  removeTextBoxB: (id) => set((state) => (state.paneB ? { paneB: { ...state.paneB, textBoxes: state.paneB.textBoxes.filter((tb) => tb.id !== id) } } : state)),
+  setSelectedTextBoxIdB: (id) => set((state) => (state.paneB ? { paneB: { ...state.paneB, selectedTextBoxId: id } } : state)),
+  setPlacingTextBoxB: (on) => set((state) => (state.paneB ? { paneB: { ...state.paneB, placingTextBox: on } } : state)),
+  setEditingTextBoxIdB: (id) => set((state) => (state.paneB ? { paneB: { ...state.paneB, editingTextBoxId: id } } : state)),
+
+  loadFlashcardsB: async (pdfId) => {
+    const json = await invoke<string>('get_flashcards', { pdfId });
+    const flashcards: Flashcard[] = JSON.parse(json);
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, flashcards } } : state));
+  },
+  addFlashcardB: (f) => {
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, flashcards: [...state.paneB.flashcards, f] }, allCards: [...state.allCards, f] } : { allCards: [...state.allCards, f] }));
+    if (f.pdf_id) schedulePush(f.pdf_id);
+  },
+  removeFlashcardB: (id) =>
+    set((state) => {
+      const removed = state.paneB?.flashcards.find((f) => f.id === id) ?? state.allCards.find((f) => f.id === id);
+      if (removed?.pdf_id) schedulePush(removed.pdf_id);
+      return {
+        paneB: state.paneB ? { ...state.paneB, flashcards: state.paneB.flashcards.filter((f) => f.id !== id) } : state.paneB,
+        allCards: state.allCards.filter((f) => f.id !== id),
+      };
+    }),
+  updateFlashcardLocalB: (id, changes) =>
+    set((state) => {
+      const patch = (list: Flashcard[]) => list.map((f) => (f.id === id ? { ...f, ...changes } : f));
+      const allCards = patch(state.allCards);
+      const card = (state.paneB ? patch(state.paneB.flashcards) : []).find((f) => f.id === id) ?? allCards.find((f) => f.id === id);
+      const contentChanged = Object.keys(changes).some((k) => k !== 'deck_id');
+      if (card?.pdf_id && contentChanged) schedulePush(card.pdf_id);
+      return {
+        paneB: state.paneB ? { ...state.paneB, flashcards: patch(state.paneB.flashcards) } : state.paneB,
+        allCards,
+        reviewDeck: patch(state.reviewDeck),
+        reviewQueue: patch(state.reviewQueue),
+      };
+    }),
+
+  loadChatMessagesB: async (pdfId) => {
+    const json = await invoke<string>("get_chat_messages", { pdfId });
+    const rows: { id: string; role: 'user' | 'assistant'; content: string; created_at: string }[] = JSON.parse(json);
+    const chatMessages: ChatMessage[] = rows.map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      timestamp: Date.parse(r.created_at),
+    }));
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, chatMessages } } : state));
+  },
+  addChatMessageB: (msg) => {
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, chatMessages: [...state.paneB.chatMessages, msg] } } : state));
+    const pdfId = useStore.getState().paneB?.pdfId;
+    if (pdfId) {
+      invoke("add_chat_message", { pdfId, id: msg.id, role: msg.role, content: msg.content })
+        .catch((err) => console.error('[chat] failed to persist message', err));
+    }
+  },
+  clearChatB: () => {
+    const pdfId = useStore.getState().paneB?.pdfId;
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, chatMessages: [] } } : state));
+    if (pdfId) {
+      invoke("clear_chat_messages", { pdfId }).catch((err) => console.error('[chat] failed to clear history', err));
+    }
+  },
+  setAiLoadingB: (loading) => set((state) => (state.paneB ? { paneB: { ...state.paneB, isAiLoading: loading } } : state)),
+
+  setOutlineB: (items) => set((state) => (state.paneB ? { paneB: { ...state.paneB, outline: items } } : state)),
+  loadOutlineB: async (pdfId) => {
+    const json = await invoke<string>('get_outline', { pdfId });
+    const outline: OutlineItem[] = JSON.parse(json);
+    set((state) => (state.paneB ? { paneB: { ...state.paneB, outline } } : state));
+  },
+  setOutlineLoadingB: (loading) => set((state) => (state.paneB ? { paneB: { ...state.paneB, outlineLoading: loading } } : state)),
+  toggleOutlineExpandedB: (id) =>
+    set((state) => {
+      if (!state.paneB) return state;
+      const next = new Set(state.paneB.expandedOutlineIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { paneB: { ...state.paneB, expandedOutlineIds: next } };
+    }),
+  setOutlineSectionExpandedB: (expanded) => set((state) => (state.paneB ? { paneB: { ...state.paneB, isOutlineSectionExpanded: expanded } } : state)),
+  setOutlineAttemptedB: (attempted) => set((state) => (state.paneB ? { paneB: { ...state.paneB, outlineAttempted: attempted } } : state)),
+  setRequestOutlineExtractionB: (fn) => set((state) => (state.paneB ? { paneB: { ...state.paneB, requestOutlineExtraction: fn } } : state)),
 }));
 
 // Checks pending_pdf_annotations for a newly-hashed PDF and, if another

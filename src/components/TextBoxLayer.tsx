@@ -25,6 +25,7 @@ interface Props {
   viewport: PageViewport;
   scale: number;
   textBoxes: TextBox[];
+  paneId: 'A' | 'B';
 }
 
 function TextBoxEl({
@@ -298,15 +299,17 @@ function TextBoxEl({
   );
 }
 
-export function TextBoxLayer({ pageNum, viewport, scale, textBoxes }: Props) {
-  const {
-    selectedTextBoxId,
-    setSelectedTextBoxId,
-    updateTextBoxLocal,
-    removeTextBox,
-    editingTextBoxId,
-    setEditingTextBoxId,
-  } = useStore();
+export function TextBoxLayer({ pageNum, viewport, scale, textBoxes, paneId }: Props) {
+  const store = useStore();
+  // Pane-scoped — see PaneBState's design note in store/index.ts. Pane A
+  // binds to the pre-existing top-level fields/actions unchanged; pane B
+  // binds to the paneB.* equivalents.
+  const selectedTextBoxId = paneId === 'A' ? store.selectedTextBoxId : (store.paneB?.selectedTextBoxId ?? null);
+  const setSelectedTextBoxId = paneId === 'A' ? store.setSelectedTextBoxId : store.setSelectedTextBoxIdB;
+  const updateTextBoxLocal = paneId === 'A' ? store.updateTextBoxLocal : store.updateTextBoxLocalB;
+  const removeTextBox = paneId === 'A' ? store.removeTextBox : store.removeTextBoxB;
+  const editingTextBoxId = paneId === 'A' ? store.editingTextBoxId : (store.paneB?.editingTextBoxId ?? null);
+  const setEditingTextBoxId = paneId === 'A' ? store.setEditingTextBoxId : store.setEditingTextBoxIdB;
 
   const pageBoxes = textBoxes.filter((tb) => tb.page === pageNum);
 

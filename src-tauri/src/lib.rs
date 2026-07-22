@@ -18,6 +18,7 @@ use commands::{
     restore_pdf,
     reveal_in_folder, save_binary_file, save_text_file, set_folder_pinned, set_pdf_pinned, set_setting, store_chunks, store_outline, update_drawing_points,
     update_flashcard_fields, update_flashcard_review, update_highlight, update_last_opened,
+    update_last_page,
     update_note, update_pdf_content_hash, update_pdf_ingestion_status, update_text_box,
     trash_pdf,
     upsert_flashcard, upsert_highlight, upsert_note, upsert_pending_pdf_annotation,
@@ -361,6 +362,12 @@ pub fn run() {
                 [],
             );
 
+            // ── Resume reading position ──────────────────────────────────────────
+            // Persists the last page a PDF was scrolled to, so reopening it (or
+            // switching back from another document) returns the reader there
+            // instead of always restarting at page 1.
+            let _ = conn.execute("ALTER TABLE pdfs ADD COLUMN last_page INTEGER NOT NULL DEFAULT 1", []);
+
             // ── Deduplication migration ───────────────────────────────────────────
             // Root cause: CREATE TABLE IF NOT EXISTS never modifies existing tables,
             // so databases created before the UNIQUE constraint was added to the
@@ -462,6 +469,7 @@ pub fn run() {
             get_trashed_pdfs,
             rename_pdf,
             update_last_opened,
+            update_last_page,
             update_pdf_content_hash,
             add_highlight,
             get_highlights,

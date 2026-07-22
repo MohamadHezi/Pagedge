@@ -18,12 +18,12 @@ const DRAG_THRESHOLD = 5;
 export function LibrarySidebar() {
   const {
     pdfs, selectedPdfId, selectPdf, leftPanelOpen,
-    ingestionStatus, isModelLoading, addPdf, trashPdf, loadTrashedPdfs, renamePdf,
+    ingestionStatus, ocrProgress, isModelLoading, addPdf, trashPdf, loadTrashedPdfs, renamePdf,
     trashViewOpen, setTrashViewOpen,
     startReview, pendingImportPrompt, remoteOnlyPdfs,
     folders, createFolder, renameFolder, deleteFolder, moveFolderToParent, movePdfToFolder, setPdfPinned, setFolderPinned,
     standaloneNotes, loadStandaloneNotes, createStandaloneNote, openStandaloneNote,
-    highlights,
+    highlights, paneB,
   } = useStore();
 
   const [isImporting, setIsImporting] = useState(false);
@@ -69,6 +69,24 @@ export function LibrarySidebar() {
       return next;
     });
   }, [highlights, selectedPdfId]);
+
+  // Same live-sync, for whichever document is open in split-view pane B —
+  // pane A and pane B each hold their own independent highlights array, so
+  // both need to be watched for the color dots to stay correct for either.
+  useEffect(() => {
+    if (!paneB) return;
+    const pdfId = paneB.pdfId;
+    setPdfColors((prev) => {
+      const colors = new Set(paneB.highlights.map((h) => h.color as HighlightColorKey));
+      const existing = prev.get(pdfId);
+      if (existing && existing.size === colors.size && [...existing].every((c) => colors.has(c))) {
+        return prev;
+      }
+      const next = new Map(prev);
+      next.set(pdfId, colors);
+      return next;
+    });
+  }, [paneB]);
 
   // Shared props for a nav-section-header that toggles a collapsible body —
   // same accordion look/behavior across Notes, Library, Synced Elsewhere, Quick Views.
@@ -543,6 +561,11 @@ export function LibrarySidebar() {
         {!isRenaming && (
           <span className="pdf-item-right">
             <span className="pdf-status">
+              {status === "ocr" && (
+                <span className="pdf-status-ocr" title="Recognizing text on scanned pages">
+                  {ocrProgress[pdf.id]?.done ?? 0}/{ocrProgress[pdf.id]?.total ?? 0}
+                </span>
+              )}
               {status === "done" && (
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="pdf-status-done" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />

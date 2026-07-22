@@ -1,7 +1,7 @@
 {
   "name": "pagedge",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -24,9 +24,14 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@uiw/react-md-editor": "^4.0.4",
     "jspdf": "^4.2.1",
+    "katex": "^0.18.1",
     "pdfjs-dist": "^6.1.200",
     "react": "^18",
     "react-dom": "^18",
+    "rehype-katex": "^7.0.1",
+    "remark-breaks": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "tesseract-wasm": "^0.11.0",
     "zustand": "^5"
   },
   "devDependencies": {

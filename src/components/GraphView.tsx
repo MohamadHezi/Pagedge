@@ -604,10 +604,37 @@ export function GraphView() {
     // orphaned notes/cards whose source PDF was deleted (delete_pdf severs
     // notes.source_pdf_id on purpose) — have nothing to open, so they get a
     // neighborhood focus plus an info card at the click position instead.
+    // Opens pdfId into whichever pane already has it (jumping directly and
+    // just focusing), or into the focused pane if it isn't open anywhere —
+    // same "jump always targets the focused pane" rule SearchModal follows.
+    // Returns which pane the document ended up in, so the caller can route
+    // any follow-up pane-scoped action (e.g. setSelectedNoteId) correctly.
+    const openPdfForNode = (pdfId: string, page: number | null): 'A' | 'B' => {
+      const s = useStore.getState();
+      if (s.selectedPdfId === pdfId) {
+        if (page != null) s.jumpToPage?.(page);
+        s.focusPane('A');
+        return 'A';
+      }
+      if (s.paneB?.pdfId === pdfId) {
+        if (page != null) s.paneB.jumpToPage?.(page);
+        s.focusPane('B');
+        return 'B';
+      }
+      if (s.focusedPane === 'A') {
+        if (page != null) s.setPendingJumpPage(page);
+        s.selectPdf(pdfId);
+        return 'A';
+      }
+      if (page != null) s.setPendingJumpPageB(page);
+      s.openPaneB(pdfId);
+      return 'B';
+    };
+
     const openNode = (n: GraphNode, sx: number, sy: number) => {
       const s = useStore.getState();
       if (n.type === 'pdf') {
-        s.selectPdf(n.refId);
+        openPdfForNode(n.refId, null);
         return;
       }
       // Standalone notes (no source PDF) open in the full-page Notebook
@@ -627,10 +654,10 @@ export function GraphView() {
         });
         return;
       }
-      if (n.page != null) s.setPendingJumpPage(n.page);
-      s.selectPdf(n.pdfId);
+      const targetPane = openPdfForNode(n.pdfId, n.page ?? null);
       if (n.type === 'note') {
-        s.setSelectedNoteId(n.refId);
+        if (targetPane === 'A') s.setSelectedNoteId(n.refId);
+        else s.setSelectedNoteIdB(n.refId);
         s.setRightPanelTab('notes');
         s.setRightPanelOpen(true);
       }

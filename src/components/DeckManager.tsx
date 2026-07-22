@@ -29,9 +29,6 @@ export function DeckManager() {
     removeFlashcard,
     updateFlashcardLocal,
     startReview,
-    selectPdf,
-    selectedPdfId,
-    setPendingJumpPage,
     setDeckManagerOpen,
   } = useStore();
 
@@ -236,12 +233,26 @@ export function DeckManager() {
 
   const handleSourceJump = (card: Flashcard) => {
     if (!card.pdf_id || card.page == null) return;
-    setPendingJumpPage(card.page);
-    if (card.pdf_id !== selectedPdfId) {
-      selectPdf(card.pdf_id); // also closes the Deck Manager
+    // DeckManager fully replaces MainArea while open, so no PdfViewer is
+    // mounted to jump within directly — always queue via pendingJumpPage(B)
+    // and let whichever pane it belongs to consume it once PdfViewer
+    // (re)mounts after this view closes. A jump not already open anywhere
+    // targets the focused pane, same rule SearchModal/GraphView follow.
+    const s = useStore.getState();
+    if (card.pdf_id === s.selectedPdfId) {
+      s.setPendingJumpPage(card.page);
+      s.focusPane('A');
+    } else if (card.pdf_id === s.paneB?.pdfId) {
+      s.setPendingJumpPageB(card.page);
+      s.focusPane('B');
+    } else if (s.focusedPane === 'A') {
+      s.setPendingJumpPage(card.page);
+      s.selectPdf(card.pdf_id);
     } else {
-      setDeckManagerOpen(false); // PdfViewer remounts and consumes the pending jump
+      s.setPendingJumpPageB(card.page);
+      s.openPaneB(card.pdf_id);
     }
+    setDeckManagerOpen(false);
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────

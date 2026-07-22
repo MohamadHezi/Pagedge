@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import MDEditor from "@uiw/react-md-editor";
 import "@uiw/react-md-editor/markdown-editor.css";
+import { MathMarkdown } from "./MathMarkdown";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import type { Note, ChatMessage, Highlight, RawChunk } from "../types";
@@ -13,7 +14,8 @@ import { bytesToFloat32, cosineSimilarity } from "../utils/embeddings";
 // ── Prompts ───────────────────────────────────────────────────────────────────
 const CHAT_SYSTEM =
   'You are a reading assistant. Answer questions about the provided document. ' +
-  'Cite page numbers when relevant (e.g. "page 3"). Be concise and direct.';
+  'Cite page numbers when relevant (e.g. "page 3"). Be concise and direct. ' +
+  'Write any mathematical notation as LaTeX: $...$ for inline math, $$...$$ for display equations.';
 
 // Free-tier proxy calls are char-capped (FREE_TIER_MAX_CONTEXT_CHARS in
 // aiService.ts, mirrored on the backend) — 8 chunks at ~2000 chars each
@@ -160,8 +162,9 @@ function extractPageRefs(text: string): number[] {
 
 // ── NoteCard ─────────────────────────────────────────────────────────────────
 
-function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
-  const { jumpToPage } = useStore();
+function NoteCard({ note, onClick, paneId }: { note: Note; onClick: () => void; paneId: 'A' | 'B' }) {
+  const store = useStore();
+  const jumpToPage = paneId === 'A' ? store.jumpToPage : store.paneB?.jumpToPage ?? null;
   const preview = stripMarkdown(note.content_markdown).slice(0, 80);
 
   return (
@@ -188,23 +191,25 @@ function NoteCard({ note, onClick }: { note: Note; onClick: () => void }) {
 // ── NoteEditor ────────────────────────────────────────────────────────────────
 
 export function NoteEditor({
-  note, onBack, fullPage = false, extraHeaderActions,
+  note, onBack, fullPage = false, extraHeaderActions, paneId,
 }: {
   note: Note;
   onBack: () => void;
   fullPage?: boolean;
   extraHeaderActions?: React.ReactNode;
+  // Which pane's notes this note belongs to — irrelevant (and omitted) for
+  // NoteWorkspace's standalone-note usage, which always takes the
+  // updateStandaloneNoteLocal/removeStandaloneNoteLocal path below
+  // regardless of pane. Defaults to 'A' so that path is unaffected.
+  paneId?: 'A' | 'B';
 }) {
+  const store = useStore();
   const {
     isAuthenticated,
     requireAuth,
     pdfs,
-    jumpToPage,
-    updateNote: storeUpdateNote,
-    removeNote,
     updateStandaloneNoteLocal,
     removeStandaloneNoteLocal,
-    setSelectedNoteId,
     setNoteWorkspaceOpen,
     suggestedTags,
     setSuggestedTags,
@@ -212,7 +217,12 @@ export function NoteEditor({
     isSuggestingTags,
     setIsSuggestingTags,
     editorLineWrap,
-  } = useStore();
+  } = store;
+  const isPaneA = (paneId ?? 'A') === 'A';
+  const jumpToPage = isPaneA ? store.jumpToPage : store.paneB?.jumpToPage ?? null;
+  const storeUpdateNote = isPaneA ? store.updateNote : store.updateNoteB;
+  const removeNote = isPaneA ? store.removeNote : store.removeNoteB;
+  const setSelectedNoteId = isPaneA ? store.setSelectedNoteId : store.setSelectedNoteIdB;
 
   const [localTitle, setLocalTitle] = useState(note.title);
   const [localContent, setLocalContent] = useState(note.content_markdown);
@@ -715,14 +725,16 @@ export function NoteEditor({
 
 // ── Highlights tab ────────────────────────────────────────────────────────────
 
-function HighlightsView() {
+function HighlightsView({ paneId }: { paneId: 'A' | 'B' }) {
+  const store = useStore();
   const {
-    highlights,
     highlightFilter,
     setHighlightFilter,
-    jumpToPage,
     setFlashHighlightId,
-  } = useStore();
+  } = store;
+  const isPaneA = paneId === 'A';
+  const highlights = isPaneA ? store.highlights : (store.paneB?.highlights ?? []);
+  const jumpToPage = isPaneA ? store.jumpToPage : store.paneB?.jumpToPage ?? null;
 
   const sorted = [...highlights].sort((a, b) => {
     if (a.page !== b.page) return a.page - b.page;
@@ -845,18 +857,15 @@ function HighlightItem({ highlight: h, onClick }: { highlight: Highlight; onClic
 
 // ── Chat tab ──────────────────────────────────────────────────────────────────
 
-function ChatView() {
-  const {
-    isAuthenticated,
-    requireAuth,
-    selectedPdfId,
-    pdfs,
-    chatMessages,
-    addChatMessage,
-    clearChat,
-    jumpToPage,
-    user,
-  } = useStore();
+function ChatView({ paneId }: { paneId: 'A' | 'B' }) {
+  const store = useStore();
+  const { isAuthenticated, requireAuth, pdfs, user } = store;
+  const isPaneA = paneId === 'A';
+  const selectedPdfId = isPaneA ? store.selectedPdfId : (store.paneB?.pdfId ?? null);
+  const chatMessages = isPaneA ? store.chatMessages : (store.paneB?.chatMessages ?? []);
+  const addChatMessage = isPaneA ? store.addChatMessage : store.addChatMessageB;
+  const clearChat = isPaneA ? store.clearChat : store.clearChatB;
+  const jumpToPage = isPaneA ? store.jumpToPage : store.paneB?.jumpToPage ?? null;
 
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
@@ -864,6 +873,7 @@ function ChatView() {
   const [noIndexWarning, setNoIndexWarning] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const currentPdf = pdfs.find((p) => p.id === selectedPdfId);
   const isIndexed = Boolean(currentPdf?.ingested_at);
@@ -871,6 +881,16 @@ function ChatView() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, typing]);
+
+  // Auto-grow the composer for multi-line messages (Shift+Enter for a
+  // newline, Enter to send) — re-measured on every value change, including
+  // the reset back to '' after sending, so it shrinks back down too.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   const handleSend = async () => {
     if (!isAuthenticated) return requireAuth('Sign in to chat with this PDF', () => handleSend());
@@ -970,7 +990,9 @@ function ChatView() {
           const pages = msg.role === 'assistant' ? extractPageRefs(msg.content) : [];
           return (
             <div key={msg.id} className={`chat-message chat-message--${msg.role}`}>
-              <div className="chat-bubble">{msg.content}</div>
+              <div className="chat-bubble" data-color-mode="dark">
+                <MathMarkdown source={msg.content} className="chat-bubble-md" breaks />
+              </div>
               {pages.length > 0 && (
                 <div className="chat-citations">
                   {pages.map((p) => (
@@ -999,13 +1021,15 @@ function ChatView() {
       </div>
 
       <div className="chat-input-row">
-        <input
+        <textarea
+          ref={textareaRef}
           className="chat-input"
           placeholder="Ask about this document…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
           disabled={typing}
+          rows={1}
         />
         <button
           className="chat-send-btn"
@@ -1025,19 +1049,32 @@ function ChatView() {
 // ── RightPanel ────────────────────────────────────────────────────────────────
 
 export function RightPanel() {
+  const store = useStore();
   const {
-    selectedPdfId,
-    notes,
-    selectedNoteId,
-    setSelectedNoteId,
-    currentPage,
-    addNote,
+    pdfs,
     rightPanelOpen,
     rightPanelTab,
     setRightPanelTab,
     activeTagFilter,
     setActiveTagFilter,
-  } = useStore();
+    focusedPane,
+  } = store;
+
+  // RightPanel is a single shared instance that follows whichever pane last
+  // had focus (see the plan's design note: two independent RightPanels was
+  // explicitly ruled out — not enough screen real estate once two PDF panes
+  // already split the window, and notes/chat/highlights are single-document
+  // authoring concepts a user works with one at a time even when comparing
+  // two documents side by side).
+  const paneId = focusedPane;
+  const isPaneA = paneId === 'A';
+  const selectedPdfId = isPaneA ? store.selectedPdfId : (store.paneB?.pdfId ?? null);
+  const notes = isPaneA ? store.notes : (store.paneB?.notes ?? []);
+  const selectedNoteId = isPaneA ? store.selectedNoteId : (store.paneB?.selectedNoteId ?? null);
+  const setSelectedNoteId = isPaneA ? store.setSelectedNoteId : store.setSelectedNoteIdB;
+  const currentPage = isPaneA ? store.currentPage : (store.paneB?.currentPage ?? 1);
+  const addNote = isPaneA ? store.addNote : store.addNoteB;
+  const focusedDoc = selectedPdfId ? pdfs.find((p) => p.id === selectedPdfId) ?? null : null;
 
   // ── Resize (hooks before early return) ────────────────────────────────────
   const panelRef  = useRef<HTMLElement>(null);
@@ -1103,8 +1140,16 @@ export function RightPanel() {
       style={{ "--right-panel-width": `${panelWidth}px` } as React.CSSProperties}
     >
       <div className="panel-resize-handle" onMouseDown={handleResizeStart} />
+      {/* Which document this panel is currently scoped to — only shown once
+          a second pane exists, since single-pane mode has no ambiguity to
+          resolve. */}
+      {store.paneB && focusedDoc && (
+        <div className="rp-doc-indicator" title={focusedDoc.filepath}>
+          {focusedDoc.filename}
+        </div>
+      )}
       {selectedNote ? (
-        <NoteEditor note={selectedNote} onBack={() => setSelectedNoteId(null)} />
+        <NoteEditor note={selectedNote} onBack={() => setSelectedNoteId(null)} paneId={paneId} />
       ) : (
         <>
           {/* Tab bar */}
@@ -1159,16 +1204,16 @@ export function RightPanel() {
                   <p className="note-empty">No notes with that tag.</p>
                 ) : (
                   visibleNotes.map((n) => (
-                    <NoteCard key={n.id} note={n} onClick={() => setSelectedNoteId(n.id)} />
+                    <NoteCard key={n.id} note={n} onClick={() => setSelectedNoteId(n.id)} paneId={paneId} />
                   ))
                 )}
               </div>
             </>
           )}
 
-          {rightPanelTab === 'highlights' && <HighlightsView />}
+          {rightPanelTab === 'highlights' && <HighlightsView paneId={paneId} />}
 
-          {rightPanelTab === 'chat' && <ChatView />}
+          {rightPanelTab === 'chat' && <ChatView paneId={paneId} />}
         </>
       )}
     </aside>

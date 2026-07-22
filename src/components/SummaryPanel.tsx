@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import MDEditor from '@uiw/react-md-editor';
+import { MathMarkdown } from './MathMarkdown';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
 import { HIGHLIGHT_COLORS } from '../constants/highlights';
@@ -21,17 +21,17 @@ const LENS_LABEL: Record<Exclude<LensKey, 'default'>, string> = {
 };
 
 export function SummaryPanel() {
+  const store = useStore();
   const {
     summaryContent,
     summaryLens,
+    summaryPdfId,
     isSummarizing,
     clearSummary,
-    selectedPdfId,
     pdfs,
-    addNote,
     setSelectedNoteId,
     setRightPanelOpen,
-  } = useStore();
+  } = store;
 
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -43,7 +43,7 @@ export function SummaryPanel() {
   const colorKey  = LENS_TO_COLOR[lens];
   const color     = HIGHLIGHT_COLORS[colorKey];
   const lensLabel = LENS_LABEL[lens];
-  const pdf       = pdfs.find((p) => p.id === selectedPdfId);
+  const pdf       = pdfs.find((p) => p.id === summaryPdfId);
 
   const handleCopy = async () => {
     if (!summaryContent) return;
@@ -53,13 +53,13 @@ export function SummaryPanel() {
   };
 
   const handleSaveToNotes = async () => {
-    if (!selectedPdfId || !summaryContent || saving) return;
+    if (!summaryPdfId || !summaryContent || saving) return;
     setSaving(true);
     try {
       const title = `${lensLabel} Summary`;
       const raw = await invoke<string>('create_note', {
         title,
-        sourcePdfId: selectedPdfId,
+        sourcePdfId: summaryPdfId,
         sourcePage: 1,
       });
       const created = JSON.parse(raw) as Note;
@@ -70,9 +70,18 @@ export function SummaryPanel() {
           contentMarkdown: summaryContent,
         })
       ) as Note;
-      addNote(updated);
-      setSelectedNoteId(updated.id);
-      setRightPanelOpen(true);
+      // Attribute the saved note to whichever pane (if either) currently has
+      // this pdf open — summaryPdfId may belong to the pane that generated
+      // it even if the user has since switched panes/documents.
+      if (summaryPdfId === store.selectedPdfId) {
+        store.addNote(updated);
+        setSelectedNoteId(updated.id);
+        setRightPanelOpen(true);
+      } else if (summaryPdfId === store.paneB?.pdfId) {
+        store.addNoteB(updated);
+        store.setSelectedNoteIdB(updated.id);
+        setRightPanelOpen(true);
+      }
       clearSummary();
     } catch (err) {
       console.error('[summary] Save to notes failed:', err);
@@ -117,7 +126,7 @@ export function SummaryPanel() {
             </div>
           ) : (
             <div data-color-mode="dark" className="summary-markdown">
-              <MDEditor.Markdown source={summaryContent ?? ''} />
+              <MathMarkdown source={summaryContent ?? ''} />
             </div>
           )}
         </div>

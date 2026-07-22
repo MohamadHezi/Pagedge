@@ -1,20 +1,20 @@
 import { useState } from 'react';
-import MDEditor from '@uiw/react-md-editor';
+import { MathMarkdown } from './MathMarkdown';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
 import type { Note } from '../types';
 
 export function StudyGuidePanel() {
+  const store = useStore();
   const {
     studyGuideContent,
+    studyGuidePdfId,
     isGeneratingStudyGuide,
     clearStudyGuide,
-    selectedPdfId,
     pdfs,
-    addNote,
     setSelectedNoteId,
     setRightPanelOpen,
-  } = useStore();
+  } = store;
 
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -23,7 +23,7 @@ export function StudyGuidePanel() {
   const isOpen = isGeneratingStudyGuide || studyGuideContent !== null;
   if (!isOpen) return null;
 
-  const pdf = pdfs.find((p) => p.id === selectedPdfId);
+  const pdf = pdfs.find((p) => p.id === studyGuidePdfId);
   const title = pdf ? `Study Guide — ${pdf.filename}` : 'Study Guide';
 
   const handleCopy = async () => {
@@ -34,12 +34,12 @@ export function StudyGuidePanel() {
   };
 
   const handleSaveToNotes = async () => {
-    if (!selectedPdfId || !studyGuideContent || saving) return;
+    if (!studyGuidePdfId || !studyGuideContent || saving) return;
     setSaving(true);
     try {
       const raw = await invoke<string>('create_note', {
         title,
-        sourcePdfId: selectedPdfId,
+        sourcePdfId: studyGuidePdfId,
         sourcePage: 1,
       });
       const created = JSON.parse(raw) as Note;
@@ -50,9 +50,17 @@ export function StudyGuidePanel() {
           contentMarkdown: studyGuideContent,
         })
       ) as Note;
-      addNote(updated);
-      setSelectedNoteId(updated.id);
-      setRightPanelOpen(true);
+      // See SummaryPanel's identical comment: attribute to whichever pane
+      // (if either) still has this pdf open.
+      if (studyGuidePdfId === store.selectedPdfId) {
+        store.addNote(updated);
+        setSelectedNoteId(updated.id);
+        setRightPanelOpen(true);
+      } else if (studyGuidePdfId === store.paneB?.pdfId) {
+        store.addNoteB(updated);
+        store.setSelectedNoteIdB(updated.id);
+        setRightPanelOpen(true);
+      }
       clearStudyGuide();
     } catch (err) {
       console.error('[study-guide] Save to notes failed:', err);
@@ -107,7 +115,7 @@ export function StudyGuidePanel() {
             </div>
           ) : (
             <div data-color-mode="dark" className="summary-markdown">
-              <MDEditor.Markdown source={studyGuideContent ?? ''} />
+              <MathMarkdown source={studyGuideContent ?? ''} />
             </div>
           )}
         </div>

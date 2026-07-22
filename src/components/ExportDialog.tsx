@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 
 export function ExportDialog() {
-  const { exportDialogOpen, setExportDialogOpen, selectedPdfId, pdfs } = useStore();
+  const { exportDialogOpen, setExportDialogOpen, exportDialogPdfId, pdfs } = useStore();
 
   const [includeHighlights, setIncludeHighlights] = useState(true);
   const [includeDrawings, setIncludeDrawings] = useState(true);
@@ -27,18 +27,18 @@ export function ExportDialog() {
     return () => window.removeEventListener("keydown", onKey);
   }, [exportDialogOpen, setExportDialogOpen]);
 
-  if (!exportDialogOpen || !selectedPdfId) return null;
+  if (!exportDialogOpen || !exportDialogPdfId) return null;
 
-  const currentPdf = pdfs.find((p) => p.id === selectedPdfId);
+  const currentPdf = pdfs.find((p) => p.id === exportDialogPdfId);
   const filename = currentPdf?.filename ?? "document.pdf";
 
   const handleExport = async () => {
-    if (!selectedPdfId) return;
+    if (!exportDialogPdfId) return;
     setExporting(true);
     setResult(null);
     try {
       const outputPath = await invoke<string>("export_annotated_pdf", {
-        pdfId: selectedPdfId,
+        pdfId: exportDialogPdfId,
         includeHighlights,
         includeDrawings,
         includeTextBoxes,

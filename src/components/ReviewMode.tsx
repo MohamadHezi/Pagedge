@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
+import { MathMarkdown } from "./MathMarkdown";
 import { deckMastery, isLowConfidence } from "../services/flashcardService";
 import { schedulePush } from "../services/syncService";
 import type { Flashcard, ConfidenceLevel } from "../types";
@@ -16,10 +17,6 @@ export function ReviewMode() {
     currentReviewIndex,
     advanceReview,
     updateFlashcardLocal,
-    selectedPdfId,
-    setPendingJumpPage,
-    selectPdf,
-    jumpToPage,
   } = useStore();
 
   const [flipped, setFlipped] = useState(false);
@@ -86,13 +83,27 @@ export function ReviewMode() {
     // Custom cards have no source PDF/page to jump to.
     if (!card?.pdf_id || card.page == null) return;
     setReviewModeOpen(false);
-    if (card.pdf_id !== selectedPdfId) {
-      setPendingJumpPage(card.page);
-      selectPdf(card.pdf_id);
+    // ReviewMode is an overlay, not a MainArea-replacing view — PdfViewer(s)
+    // stay mounted underneath, so a pane that already has this pdf open can
+    // jump directly via its live scrollTo. Otherwise the jump targets the
+    // focused pane, same rule as SearchModal/GraphView/DeckManager.
+    const s = useStore.getState();
+    const pdfId = card.pdf_id;
+    const page = card.page;
+    if (s.selectedPdfId === pdfId) {
+      s.jumpToPage?.(page);
+      s.focusPane('A');
+    } else if (s.paneB?.pdfId === pdfId) {
+      s.paneB.jumpToPage?.(page);
+      s.focusPane('B');
+    } else if (s.focusedPane === 'A') {
+      s.setPendingJumpPage(page);
+      s.selectPdf(pdfId);
     } else {
-      jumpToPage?.(card.page);
+      s.setPendingJumpPageB(page);
+      s.openPaneB(pdfId);
     }
-  }, [card, selectedPdfId, setPendingJumpPage, selectPdf, jumpToPage, setReviewModeOpen]);
+  }, [card, setReviewModeOpen]);
 
   if (!reviewModeOpen) return null;
 
@@ -162,8 +173,12 @@ export function ReviewMode() {
           onClick={() => setFlipped((f) => !f)}
         >
           <div className="review-card-inner">
-            <div className="review-card-face review-card-front">{card.front}</div>
-            <div className="review-card-face review-card-back">{card.back}</div>
+            <div className="review-card-face review-card-front" data-color-mode="dark">
+              <MathMarkdown source={card.front} className="review-card-md" breaks />
+            </div>
+            <div className="review-card-face review-card-back" data-color-mode="dark">
+              <MathMarkdown source={card.back} className="review-card-md" breaks />
+            </div>
           </div>
         </div>
         {card.pdf_id && card.page != null && (

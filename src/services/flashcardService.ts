@@ -6,6 +6,7 @@ import type { Flashcard, Highlight } from '../types';
 const FLASHCARD_SYSTEM =
   'You are a study-flashcard generator. Given a passage a student highlighted, ' +
   'produce exactly one flashcard that tests understanding of its key idea. ' +
+  'Write any mathematical notation as LaTeX ($...$ inline, $$...$$ display). ' +
   'Respond in exactly this format and nothing else:\nFRONT: <question>\nBACK: <answer>';
 
 function parseFrontBack(raw: string): { front: string; back: string } | null {

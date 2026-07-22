@@ -15,6 +15,7 @@ import { ComparePickerModal } from "./ComparePickerModal";
 import { LensSwitcher } from "./LensSwitcher";
 import { AnnotationDock } from "./AnnotationDock";
 import { TextBoxLayer, DEFAULT_W, DEFAULT_H } from "./TextBoxLayer";
+import { MathMarkdown } from "./MathMarkdown";
 import { callAI } from "../services/aiService";
 import { generateFlashcardsForHighlights } from "../services/flashcardService";
 import { ensureOutline } from "../services/outlineService";
@@ -27,12 +28,19 @@ import { drawingToSketchStroke, sketchStrokeToDrawing } from "../lib/drawingConv
 const HIGHLIGHT_HINT_SEEN_KEY = 'pagedge_highlight_hint_seen';
 
 // ── AI prompts ────────────────────────────────────────────────────────────────
-const EXPLAIN_SYSTEM = 'You are a helpful reading assistant. Be concise.';
+// Appended to system prompts whose output renders through MathMarkdown
+// (remark-math + rehype-katex) — without this the model has no reason to
+// ever emit LaTeX delimiters instead of plain-text math notation.
+const MATH_FORMATTING_HINT =
+  ' Write any mathematical notation as LaTeX: $...$ for inline math, $$...$$ for display equations.';
+
+const EXPLAIN_SYSTEM = 'You are a helpful reading assistant. Be concise.' + MATH_FORMATTING_HINT;
 const EXPLAIN_PREFIX = 'Explain this passage clearly and concisely:\n\n';
 const SUMMARIZE_PREFIX = 'Summarize this page in 3–5 bullet points:\n\n';
 
 const SUMMARIZE_BY_COLOR_SYSTEM =
-  'You are a reading assistant helping a researcher review their annotations. Be concise, structured, and analytical.';
+  'You are a reading assistant helping a researcher review their annotations. Be concise, structured, and analytical.' +
+  MATH_FORMATTING_HINT;
 
 const LENS_SUMMARIZE_PROMPTS: Record<Exclude<LensKey, 'default'>, string> = {
   concepts:
@@ -64,7 +72,8 @@ const STUDY_GUIDE_SYSTEM =
   'You are a study-guide writer helping a student review a document they have ' +
   'already annotated. Produce clear, well-structured Markdown study notes using ' +
   'the section headings given. Omit any section for which no source material is ' +
-  'provided below. Do not explain your process — output only the study guide.';
+  'provided below. Do not explain your process — output only the study guide.' +
+  MATH_FORMATTING_HINT;
 
 const STUDY_GUIDE_SECTIONS =
   '## Overview & Key Concepts\n' +
@@ -84,7 +93,8 @@ const COMPARE_SYSTEM =
   'open side by side. Be concise, structured, and evidence-based — for every point ' +
   'you make, say which document it comes from by name. The excerpts you are given ' +
   'are partial samples of each document, not the complete text; do not claim ' +
-  'completeness.';
+  'completeness.' +
+  MATH_FORMATTING_HINT;
 
 // Even/stratified sampling by chunk_index, capped by a character budget — not
 // embedding-similarity. The AI does the actual comparison reasoning over raw
@@ -119,6 +129,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 interface Props {
   filePath: string;
   pdfId: string;
+  paneId: 'A' | 'B';
 }
 
 type Cancellable = { cancel: () => void };
@@ -453,7 +464,11 @@ function ExplainPanel({
       <div className="explain-panel-body">
         {state.loading && <span className="explain-panel-loading">Thinking…</span>}
         {state.error && <span className="explain-panel-error">{state.error}</span>}
-        {state.response && <p className="explain-panel-text">{state.response}</p>}
+        {state.response && (
+          <div className="explain-panel-text" data-color-mode="dark">
+            <MathMarkdown source={state.response} className="explain-panel-md" breaks />
+          </div>
+        )}
       </div>
       {state.response && (
         <div className="explain-panel-footer">
@@ -782,66 +797,31 @@ function hitTestDrawing(d: Drawing, pdfX: number, pdfY: number, scale: number): 
 
 // ── PdfViewer ─────────────────────────────────────────────────────────────────
 
-export function PdfViewer({ filePath, pdfId }: Props) {
+export function PdfViewer({ filePath, pdfId, paneId }: Props) {
+  const store = useStore();
   const {
     isAuthenticated,
     requireAuth,
     user,
     showPaywall,
-    selectedPdfId,
     pdfs,
-    notes,
-    highlights,
-    loadHighlights,
-    addHighlight,
-    removeHighlight,
-    activeLens,
-    setActiveLens,
-    loadNotes,
-    addNote,
-    setSelectedNoteId,
-    setCurrentPage: storeSetCurrentPage,
-    setJumpToPage,
     rightPanelOpen,
     setRightPanelOpen,
     setSummary,
     setIsSummarizing,
     clearSummary,
-    pendingJumpPage,
-    setPendingJumpPage,
+    updatePdfLastPage,
     flashHighlightId,
     setFlashHighlightId,
-    drawings,
-    loadDrawings,
-    addDrawing,
-    removeDrawing,
-    drawMode,
-    setDrawMode,
     activeDrawTool,
     drawColor,
     strokeWidth,
-    textBoxes,
-    loadTextBoxes,
-    addTextBox,
-    removeTextBox,
-    selectedTextBoxId,
-    setSelectedTextBoxId,
-    placingTextBox,
-    setPlacingTextBox,
-    setEditingTextBoxId,
     setExportDialogOpen,
-    flashcards,
-    loadFlashcards,
-    addFlashcard,
     isGeneratingFlashcards,
     setIsGeneratingFlashcards,
     generationProgress,
     setGenerationProgress,
     startReview,
-    setOutline,
-    setOutlineLoading,
-    setOutlineAttempted,
-    setRequestOutlineExtraction,
     drawingClipboard,
     setDrawingClipboard,
     setStudyGuide,
@@ -851,7 +831,54 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     setCompareResult,
     setIsComparing,
     clearCompare,
-  } = useStore();
+  } = store;
+
+  // ── Pane-scoped state/actions ────────────────────────────────────────────
+  // Pane A binds to the pre-existing top-level store fields/actions,
+  // unchanged — this keeps pane A's behavior byte-for-byte identical to
+  // pre-split-view Pagedge. Pane B binds to the parallel paneB.* slice added
+  // alongside it. See PaneBState's design note in store/index.ts for why
+  // this asymmetric-but-equivalent shape was chosen over a fully symmetric
+  // Record<'A'|'B', PaneState> (it avoids rewriting every other consumer of
+  // these fields — LibrarySidebar, SearchModal, GraphView, DeckManager,
+  // ReviewMode, ExportDialog — for zero single-pane behavioral benefit).
+  const isPaneA = paneId === 'A';
+  const notes = isPaneA ? store.notes : (store.paneB?.notes ?? []);
+  const highlights = isPaneA ? store.highlights : (store.paneB?.highlights ?? []);
+  const loadHighlights = isPaneA ? store.loadHighlights : store.loadHighlightsB;
+  const addHighlight = isPaneA ? store.addHighlight : store.addHighlightB;
+  const removeHighlight = isPaneA ? store.removeHighlight : store.removeHighlightB;
+  const activeLens = isPaneA ? store.activeLens : (store.paneB?.activeLens ?? 'default');
+  const setActiveLens = isPaneA ? store.setActiveLens : store.setActiveLensB;
+  const loadNotes = isPaneA ? store.loadNotes : store.loadNotesB;
+  const addNote = isPaneA ? store.addNote : store.addNoteB;
+  const setSelectedNoteId = isPaneA ? store.setSelectedNoteId : store.setSelectedNoteIdB;
+  const storeSetCurrentPage = isPaneA ? store.setCurrentPage : store.setCurrentPageB;
+  const setJumpToPage = isPaneA ? store.setJumpToPage : store.setJumpToPageB;
+  const pendingJumpPage = isPaneA ? store.pendingJumpPage : (store.paneB?.pendingJumpPage ?? null);
+  const setPendingJumpPage = isPaneA ? store.setPendingJumpPage : store.setPendingJumpPageB;
+  const drawings = isPaneA ? store.drawings : (store.paneB?.drawings ?? []);
+  const loadDrawings = isPaneA ? store.loadDrawings : store.loadDrawingsB;
+  const addDrawing = isPaneA ? store.addDrawing : store.addDrawingB;
+  const removeDrawing = isPaneA ? store.removeDrawing : store.removeDrawingB;
+  const drawMode = isPaneA ? store.drawMode : (store.paneB?.drawMode ?? false);
+  const setDrawMode = isPaneA ? store.setDrawMode : store.setDrawModeB;
+  const textBoxes = isPaneA ? store.textBoxes : (store.paneB?.textBoxes ?? []);
+  const loadTextBoxes = isPaneA ? store.loadTextBoxes : store.loadTextBoxesB;
+  const addTextBox = isPaneA ? store.addTextBox : store.addTextBoxB;
+  const removeTextBox = isPaneA ? store.removeTextBox : store.removeTextBoxB;
+  const selectedTextBoxId = isPaneA ? store.selectedTextBoxId : (store.paneB?.selectedTextBoxId ?? null);
+  const setSelectedTextBoxId = isPaneA ? store.setSelectedTextBoxId : store.setSelectedTextBoxIdB;
+  const placingTextBox = isPaneA ? store.placingTextBox : (store.paneB?.placingTextBox ?? false);
+  const setPlacingTextBox = isPaneA ? store.setPlacingTextBox : store.setPlacingTextBoxB;
+  const setEditingTextBoxId = isPaneA ? store.setEditingTextBoxId : store.setEditingTextBoxIdB;
+  const flashcards = isPaneA ? store.flashcards : (store.paneB?.flashcards ?? []);
+  const loadFlashcards = isPaneA ? store.loadFlashcards : store.loadFlashcardsB;
+  const addFlashcard = isPaneA ? store.addFlashcard : store.addFlashcardB;
+  const setOutline = isPaneA ? store.setOutline : store.setOutlineB;
+  const setOutlineLoading = isPaneA ? store.setOutlineLoading : store.setOutlineLoadingB;
+  const setOutlineAttempted = isPaneA ? store.setOutlineAttempted : store.setOutlineAttemptedB;
+  const setRequestOutlineExtraction = isPaneA ? store.setRequestOutlineExtraction : store.setRequestOutlineExtractionB;
 
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1.0);
@@ -930,6 +957,47 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   const pdfIdRef = useRef(pdfId);
   useEffect(() => { pdfIdRef.current = pdfId; }, [pdfId]);
 
+  // Debounced persistence of the reading position, so switching PDFs (or
+  // reopening one later) resumes here instead of restarting at page 1.
+  // Keyed to the pdfId it was scheduled for (not read from pdfIdRef at flush
+  // time) — this component instance is reused across PDF switches, so a
+  // single un-keyed timeout would get silently clearTimeout()'d by the next
+  // document's own scroll before it ever wrote the previous document's page.
+  const lastPageSaveRef = useRef<{ pdfId: string; page: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // Guards against the transient scroll events fired while a new document is
+  // still loading/laying out (e.g. the old document's scrollTop momentarily
+  // overflowing the new, shorter one) — without this, handleScroll can read a
+  // bogus page during the switch and persist it as the new PDF's resume point.
+  const loadingRef = useRef(true);
+  // Which pdfId `numPages`/`pageRefs` currently describe. PdfViewer is reused
+  // across document switches (not remounted), so the very first commit after
+  // a switch renders with the NEW pdfId prop but the OLD document's numPages
+  // and pageRefs (the load effect hasn't run yet to reset them). If the
+  // pending-jump consumer effect below fired on that stale combination, it
+  // would scroll using the outgoing document's layout and consume the resume
+  // request meant for the incoming one — leaving the incoming document to
+  // fall back to page 1. Comparing against this ref (updated only once the
+  // real content for `pdfId` has loaded) closes that gap.
+  const loadedPdfIdRef = useRef<string | null>(null);
+  const flushLastPageSave = useCallback(() => {
+    const pending = lastPageSaveRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    lastPageSaveRef.current = null;
+    invoke("update_last_page", { id: pending.pdfId, page: pending.page }).catch(() => {});
+  }, []);
+  const persistLastPage = useCallback((page: number) => {
+    if (loadingRef.current) return;
+    const targetPdfId = pdfIdRef.current;
+    updatePdfLastPage(targetPdfId, page);
+    if (lastPageSaveRef.current) clearTimeout(lastPageSaveRef.current.timer);
+    const timer = setTimeout(() => {
+      invoke("update_last_page", { id: targetPdfId, page }).catch(() => {});
+      lastPageSaveRef.current = null;
+    }, 500);
+    lastPageSaveRef.current = { pdfId: targetPdfId, page, timer };
+  }, [updatePdfLastPage]);
+
   // ── Draw stroke state (mutable, no re-render needed during drawing) ──────────
   const isDrawingRef     = useRef(false);
   const currentStrokeRef = useRef<DrawPoint[]>([]);
@@ -952,6 +1020,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     const load = async () => {
       inFlightRef.current.forEach((tasks) => tasks.forEach((t) => t.cancel()));
       inFlightRef.current = new Map();
+      loadedPdfIdRef.current = null;
       pdfDocRef.current?.cleanup();
       pdfDocRef.current = null;
       viewportsRef.current = [];
@@ -978,6 +1047,12 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       sessionUndoIds.current = [];
 
       setLoading(true);
+      loadingRef.current = true;
+      // Snap back to the top immediately — the container is reused across
+      // PDF switches, so its scrollTop otherwise still reflects the previous
+      // document until the new one lays out, which can momentarily overflow
+      // a shorter document and fire a bogus scroll/page-position update.
+      if (containerRef.current) containerRef.current.scrollTop = 0;
       setError(null);
       setNumPages(0);
       setCurrentPage(1);
@@ -1011,6 +1086,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
         setNumPages(doc.numPages);
         setScale(fitScale);
+        loadedPdfIdRef.current = pdfId;
 
         invoke("update_last_opened", { id: pdfId }).catch(() => {});
         loadHighlights(pdfId).catch(() => {});
@@ -1030,7 +1106,16 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       } catch (err) {
         if (!cancelled) setError(String(err));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          // Keep the scroll-position guard up a bit longer than "loading" —
+          // the resume-to-last-page jump (or fit-to-width reflow) still has
+          // to run and animate after this, and a scroll event during that
+          // animation must not be mistaken for the reader's own scrolling.
+          setTimeout(() => {
+            if (!cancelled) loadingRef.current = false;
+          }, 700);
+        }
       }
     };
 
@@ -1038,8 +1123,12 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     return () => {
       cancelled = true;
       setRequestOutlineExtraction(null);
+      // Runs on every pdfId change (before the next load starts) and on true
+      // unmount — flush rather than let the next document's own scroll just
+      // clearTimeout() this pending write and drop it.
+      flushLastPageSave();
     };
-  }, [filePath, pdfId]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filePath, pdfId, flushLastPageSave]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Which pages currently have real canvases mounted ────────────────────
   // Derived from currentPage; only this window's worth of pages ever pays
@@ -1378,7 +1467,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
       .map((h) => `Page ${h.page}: ${h.selected_text}`)
       .join('\n');
 
-    setSummary(null, activeLens);
+    setSummary(null, activeLens, pdfId);
     setIsSummarizing(true);
 
     try {
@@ -1386,7 +1475,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         { role: 'system', content: SUMMARIZE_BY_COLOR_SYSTEM },
         { role: 'user',   content: LENS_SUMMARIZE_PROMPTS[lens] + formatted },
       ]);
-      setSummary(response, activeLens);
+      setSummary(response, activeLens, pdfId);
     } catch (err) {
       console.error('[summary] Failed:', err);
       showToast(err instanceof Error ? err.message : 'Summary failed');
@@ -1430,7 +1519,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     const pdf = pdfs.find((p) => p.id === pdfId);
     const filename = pdf?.filename ?? 'this document';
 
-    setStudyGuide(null);
+    setStudyGuide(null, pdfId);
     setIsGeneratingStudyGuide(true);
     try {
       const response = await callAI([
@@ -1443,7 +1532,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
             parts.join('\n\n'),
         },
       ]);
-      setStudyGuide(response);
+      setStudyGuide(response, pdfId);
     } catch (err) {
       console.error('[study-guide] Failed:', err);
       showToast(err instanceof Error ? err.message : 'Study guide generation failed');
@@ -1464,7 +1553,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
   }, [isAuthenticated, requireAuth, user, showPaywall, setComparePickerOpen]);
 
   const handleRunCompare = useCallback(async (targetPdfId: string) => {
-    setCompareResult(targetPdfId, null);
+    setCompareResult(targetPdfId, null, pdfId);
     setIsComparing(true);
     try {
       const [jsonA, jsonB] = await Promise.all([
@@ -1495,7 +1584,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
             `--- ${filenameB} (excerpt) ---\n${buildCompareExcerpt(chunksB)}`,
         },
       ]);
-      setCompareResult(targetPdfId, response);
+      setCompareResult(targetPdfId, response, pdfId);
     } catch (err) {
       console.error('[compare] Failed:', err);
       showToast(err instanceof Error ? err.message : 'Comparison failed');
@@ -1540,14 +1629,14 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
   // ── Save explanation to notes ─────────────────────────────────────────────
   const handleSaveExplainToNotes = useCallback(async () => {
-    if (!explainPanel?.response || !selectedPdfId) return;
+    if (!explainPanel?.response) return;
     try {
       const title = explainPanel.selectedText
         ? `Explanation — ${explainPanel.selectedText.slice(0, 45)}`
         : `Page ${explainPanel.page} summary`;
       const noteJson = await invoke<string>('create_note', {
         title,
-        sourcePdfId: selectedPdfId,
+        sourcePdfId: pdfId,
         sourcePage: explainPanel.page,
       });
       const note = JSON.parse(noteJson) as Note;
@@ -1563,7 +1652,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     } catch (err) {
       console.error('Failed to save explanation to notes:', err);
     }
-  }, [explainPanel, selectedPdfId, addNote, setSelectedNoteId]);
+  }, [explainPanel, pdfId, addNote, setSelectedNoteId]);
 
   // ── Close popups via Escape or outside mousedown ───────────────────────────
   useEffect(() => {
@@ -2171,6 +2260,12 @@ export function PdfViewer({ filePath, pdfId }: Props) {
 
   // ── Scroll tracking ────────────────────────────────────────────────────────
   const handleScroll = useCallback(() => {
+    // While a new document is loading/settling, scrollTop can transiently
+    // reflect stale layout (see loadingRef comment above) — ignore scroll
+    // events entirely until that window passes rather than trusting any
+    // page computed from them.
+    if (loadingRef.current) return;
+
     const container = containerRef.current;
     if (!container) return;
 
@@ -2180,6 +2275,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     if (scrollTop + clientHeight >= scrollHeight - 10) {
       setCurrentPage(numPages);
       storeSetCurrentPage(numPages);
+      persistLastPage(numPages);
       setPicker(null);
       setHlPopup(null);
       setHlPicker(null);
@@ -2203,12 +2299,13 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     }
     setCurrentPage(closestPage);
     storeSetCurrentPage(closestPage);
+    persistLastPage(closestPage);
 
     // Close popups when the user scrolls so they don't drift off-position.
     setPicker(null);
     setHlPopup(null);
     setHlPicker(null);
-  }, [storeSetCurrentPage, numPages]);
+  }, [storeSetCurrentPage, numPages, persistLastPage]);
 
   const scrollToPage = useCallback((n: number) => {
     const el = pageRefs.current[n - 1];
@@ -2223,12 +2320,20 @@ export function PdfViewer({ filePath, pdfId }: Props) {
     return () => setJumpToPage(null);
   }, [scrollToPage, setJumpToPage]);
 
-  // Consume a pending cross-PDF page jump queued by SearchModal. Every page
-  // wrapper is sized (placeholder or real) as soon as numPages is set, so
-  // this can fire immediately — no artificial delay needed. A single rAF
-  // retry covers the rare case where pageRefs hasn't committed yet.
+  // Consume a pending cross-PDF page jump queued by SearchModal (or a
+  // resume-to-last-page request queued by selectPdf). Every page wrapper is
+  // sized (placeholder or real) as soon as numPages is set, so this can fire
+  // immediately — no artificial delay needed. A single rAF retry covers the
+  // rare case where pageRefs hasn't committed yet.
+  //
+  // Guarded on loadedPdfIdRef matching the current pdfId: PdfViewer is reused
+  // across document switches, so the first render after switching pdfId
+  // still has numPages/pageRefs from the OUTGOING document (the load effect
+  // hasn't reset them yet). Without this guard, a pendingJumpPage meant for
+  // the incoming document gets consumed against the outgoing one's stale
+  // layout and is gone by the time the incoming document actually loads.
   useEffect(() => {
-    if (numPages > 0 && pendingJumpPage) {
+    if (numPages > 0 && pendingJumpPage && loadedPdfIdRef.current === pdfId) {
       const target = pendingJumpPage;
       if (pageRefs.current[target - 1]) {
         scrollToPage(target);
@@ -2241,7 +2346,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
         return () => cancelAnimationFrame(raf);
       }
     }
-  }, [numPages, pendingJumpPage, scrollToPage, setPendingJumpPage]);
+  }, [numPages, pendingJumpPage, scrollToPage, setPendingJumpPage, pdfId]);
 
   const fitToWidth = useCallback(async () => {
     const doc = pdfDocRef.current;
@@ -2471,6 +2576,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
                         viewport={viewportsRef.current[i]!}
                         scale={scale}
                         textBoxes={textBoxes}
+                        paneId={paneId}
                       />
                     )}
                     <div className="textLayer" />
@@ -2514,7 +2620,7 @@ export function PdfViewer({ filePath, pdfId }: Props) {
               setSelectedDrawingIds(new Set());
               setTrashPos(null);
             }}
-            onExportPdf={() => setExportDialogOpen(true)}
+            onExportPdf={() => setExportDialogOpen(true, pdfId)}
             onGenerateStudyGuide={handleGenerateStudyGuide}
             onOpenComparePicker={handleOpenComparePicker}
           />

@@ -33,6 +33,7 @@ export function SearchModal() {
     pdfs, selectedPdfId, selectPdf,
     jumpToPage, setPendingJumpPage,
     highlights,
+    paneB, focusedPane, focusPane, openPaneB, setPendingJumpPageB,
   } = useStore();
 
   const [query,       setQuery]       = useState('');
@@ -170,13 +171,21 @@ export function SearchModal() {
 
   const handleHitClick = (hit: SearchHit) => {
     setSearchModalOpen(false);
-    if (hit.sourceId !== selectedPdfId) {
-      // Different PDF: select it and queue a page jump for after it loads
+    // Already open in one of the two panes — jump directly in that pane and
+    // focus it, rather than opening a redundant second copy.
+    if (hit.sourceId === selectedPdfId) {
+      jumpToPage?.(hit.page);
+      focusPane('A');
+    } else if (hit.sourceId === paneB?.pdfId) {
+      paneB.jumpToPage?.(hit.page);
+      focusPane('B');
+    } else if (focusedPane === 'A') {
+      // Not open anywhere — a jump always targets the focused pane.
       setPendingJumpPage(hit.page);
       selectPdf(hit.sourceId);
     } else {
-      // Same PDF: jump directly using the already-registered scroll fn
-      jumpToPage?.(hit.page);
+      setPendingJumpPageB(hit.page);
+      openPaneB(hit.sourceId);
     }
   };
 

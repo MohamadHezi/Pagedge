@@ -5,6 +5,7 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 import "pdfjs-dist/web/pdf_viewer.css";
+import "katex/dist/katex.min.css";
 
 // Only initializes if VITE_SENTRY_DSN is set at build time — an empty/missing
 // DSN makes the SDK a no-op, so this is safe to ship before a Sentry project

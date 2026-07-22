@@ -11,6 +11,7 @@ export interface Pdf {
   content_hash: string | null;
   is_pinned: boolean;
   deleted_at: string | null;
+  last_page: number;
 }
 
 export interface PageText {
@@ -18,7 +19,7 @@ export interface PageText {
   text: string;
 }
 
-export type IngestionStatus = 'indexing' | 'done' | 'error';
+export type IngestionStatus = 'indexing' | 'ocr' | 'done' | 'error';
 
 export interface HlRect {
   x: number; y: number; w: number; h: number;

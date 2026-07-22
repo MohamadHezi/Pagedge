@@ -18,7 +18,7 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
   optimizeDeps: {
-    exclude: ["@huggingface/transformers", "onnxruntime-web"],
+    exclude: ["@huggingface/transformers", "onnxruntime-web", "tesseract-wasm"],
   },
   // Treat .wasm files as static assets so Vite emits them to dist/
   assetsInclude: ["**/*.wasm"],

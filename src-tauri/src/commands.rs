@@ -21,6 +21,7 @@ pub struct Pdf {
     pub content_hash: Option<String>,
     pub is_pinned: bool,
     pub deleted_at: Option<String>,
+    pub last_page: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,8 +100,8 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
     let rows_changed = conn
         .execute(
             "INSERT OR IGNORE INTO pdfs
-             (id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened)
-             VALUES (?1, ?2, ?3, NULL, NULL, 0, 0, ?4, NULL)",
+             (id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, last_page)
+             VALUES (?1, ?2, ?3, NULL, NULL, 0, 0, ?4, NULL, 1)",
             rusqlite::params![new_id, filename, filepath, ingested_at],
         )
         .map_err(|e| e.to_string())?;
@@ -109,7 +110,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
     // existing row so the frontend can deduplicate by id.
     let pdf = if rows_changed == 0 {
         let mut pdf = conn.query_row(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at, last_page
              FROM pdfs WHERE filepath = ?1",
             rusqlite::params![filepath],
             |row| {
@@ -126,6 +127,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
                     content_hash: row.get(9)?,
                     is_pinned: row.get::<_, i64>(10)? != 0,
                     deleted_at: row.get(11)?,
+                    last_page: row.get(12)?,
                 })
             },
         )
@@ -157,6 +159,7 @@ pub fn add_pdf(app: AppHandle, filepath: String) -> Result<String, String> {
             content_hash: None,
             is_pinned: false,
             deleted_at: None,
+            last_page: 1,
         }
     };
 
@@ -222,7 +225,7 @@ pub fn get_trashed_pdfs(app: AppHandle) -> Result<String, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at, last_page
              FROM pdfs WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -242,6 +245,7 @@ pub fn get_trashed_pdfs(app: AppHandle) -> Result<String, String> {
                 content_hash: row.get(9)?,
                 is_pinned: row.get::<_, i64>(10)? != 0,
                 deleted_at: row.get(11)?,
+                last_page: row.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -269,6 +273,17 @@ pub fn update_last_opened(app: AppHandle, id: String) -> Result<(), String> {
     conn.execute(
         "UPDATE pdfs SET last_opened = ?1 WHERE id = ?2",
         rusqlite::params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_last_page(app: AppHandle, id: String, page: i64) -> Result<(), String> {
+    let conn = Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE pdfs SET last_page = ?1 WHERE id = ?2",
+        rusqlite::params![page, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -2539,7 +2554,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at
+            "SELECT id, filename, filepath, folder_id, page_count, pages_read, chunk_count, ingested_at, last_opened, content_hash, is_pinned, deleted_at, last_page
              FROM pdfs WHERE deleted_at IS NULL ORDER BY ingested_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -2559,6 +2574,7 @@ pub fn get_pdfs(app: AppHandle) -> Result<String, String> {
                 content_hash: row.get(9)?,
                 is_pinned: row.get::<_, i64>(10)? != 0,
                 deleted_at: row.get(11)?,
+                last_page: row.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?

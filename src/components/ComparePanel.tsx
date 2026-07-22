@@ -1,21 +1,21 @@
 import { useState } from 'react';
-import MDEditor from '@uiw/react-md-editor';
+import { MathMarkdown } from './MathMarkdown';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
 import type { Note } from '../types';
 
 export function ComparePanel() {
+  const store = useStore();
   const {
     compareContent,
     compareTargetPdfId,
+    comparePdfId,
     isComparing,
     clearCompare,
-    selectedPdfId,
     pdfs,
-    addNote,
     setSelectedNoteId,
     setRightPanelOpen,
-  } = useStore();
+  } = store;
 
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -23,7 +23,7 @@ export function ComparePanel() {
   const isOpen = isComparing || compareContent !== null;
   if (!isOpen) return null;
 
-  const pdfA = pdfs.find((p) => p.id === selectedPdfId);
+  const pdfA = pdfs.find((p) => p.id === comparePdfId);
   const pdfB = pdfs.find((p) => p.id === compareTargetPdfId);
   const subtitle = pdfA && pdfB ? `${pdfA.filename} vs ${pdfB.filename}` : undefined;
 
@@ -35,13 +35,13 @@ export function ComparePanel() {
   };
 
   const handleSaveToNotes = async () => {
-    if (!selectedPdfId || !compareContent || saving) return;
+    if (!comparePdfId || !compareContent || saving) return;
     setSaving(true);
     try {
       const title = `Comparison — ${pdfA?.filename ?? 'Document A'} vs ${pdfB?.filename ?? 'Document B'}`;
       const raw = await invoke<string>('create_note', {
         title,
-        sourcePdfId: selectedPdfId,
+        sourcePdfId: comparePdfId,
         sourcePage: 1,
       });
       const created = JSON.parse(raw) as Note;
@@ -52,9 +52,17 @@ export function ComparePanel() {
           contentMarkdown: compareContent,
         })
       ) as Note;
-      addNote(updated);
-      setSelectedNoteId(updated.id);
-      setRightPanelOpen(true);
+      // See SummaryPanel's identical comment: attribute to whichever pane
+      // (if either) still has this pdf open.
+      if (comparePdfId === store.selectedPdfId) {
+        store.addNote(updated);
+        setSelectedNoteId(updated.id);
+        setRightPanelOpen(true);
+      } else if (comparePdfId === store.paneB?.pdfId) {
+        store.addNoteB(updated);
+        store.setSelectedNoteIdB(updated.id);
+        setRightPanelOpen(true);
+      }
       clearCompare();
     } catch (err) {
       console.error('[compare] Save to notes failed:', err);
@@ -92,7 +100,7 @@ export function ComparePanel() {
             </div>
           ) : (
             <div data-color-mode="dark" className="summary-markdown">
-              <MDEditor.Markdown source={compareContent ?? ''} />
+              <MathMarkdown source={compareContent ?? ''} />
             </div>
           )}
         </div>

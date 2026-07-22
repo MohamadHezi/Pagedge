@@ -8,15 +8,19 @@ import { DeckManager } from "./DeckManager";
 import { GlobalChatView } from "./GlobalChatView";
 import { TrashView } from "./TrashView";
 import { NoteWorkspace } from "./NoteWorkspace";
+import { SplitPanePickerModal } from "./SplitPanePickerModal";
 import { ingestPdf } from "../services/ingestionService";
 
 export function MainArea() {
   const {
     addPdf, selectedPdfId, pdfs, selectPdf, graphViewOpen, deckManagerOpen, globalChatOpen, trashViewOpen,
     noteWorkspaceOpen, leftPanelOpen, setLeftPanelOpen,
+    paneB, focusedPane, focusPane, closePaneB, promoteBToA,
   } = useStore();
   const selectedPdf = pdfs.find((p) => p.id === selectedPdfId) ?? null;
+  const paneBPdf = paneB ? pdfs.find((p) => p.id === paneB.pdfId) ?? null : null;
   const [isDragging, setIsDragging] = useState(false);
+  const [splitPickerOpen, setSplitPickerOpen] = useState(false);
 
   const handleOpenDialog = useCallback(async () => {
     try {
@@ -88,6 +92,57 @@ export function MainArea() {
         </svg>
       </button>
 
+      {/* ── Split-view tab bar — only once at least one PDF is open, and only
+          for the PDF-viewing state (view-mode screens like GraphView replace
+          the whole area and hide this, same as they replace PdfViewer today) ── */}
+      {selectedPdf && !globalChatOpen && !deckManagerOpen && !trashViewOpen && !noteWorkspaceOpen && !graphViewOpen && (
+        <div className="pdf-tab-bar">
+          <button
+            className={`pdf-tab${focusedPane === 'A' ? ' pdf-tab--focused' : ''}`}
+            title={selectedPdf.filepath}
+            onClick={() => focusPane('A')}
+          >
+            <span className="pdf-tab-name">{selectedPdf.filename}</span>
+            <span
+              className="pdf-tab-close"
+              title="Close"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (paneB) promoteBToA();
+                else selectPdf(null);
+              }}
+            >
+              ×
+            </span>
+          </button>
+          {paneBPdf && (
+            <button
+              className={`pdf-tab${focusedPane === 'B' ? ' pdf-tab--focused' : ''}`}
+              title={paneBPdf.filepath}
+              onClick={() => focusPane('B')}
+            >
+              <span className="pdf-tab-name">{paneBPdf.filename}</span>
+              <span
+                className="pdf-tab-close"
+                title="Close"
+                onClick={(e) => { e.stopPropagation(); closePaneB(); }}
+              >
+                ×
+              </span>
+            </button>
+          )}
+          {!paneB && (
+            <button
+              className="pdf-tab-add"
+              title="Open a second PDF side by side"
+              onClick={() => setSplitPickerOpen(true)}
+            >
+              +
+            </button>
+          )}
+        </div>
+      )}
+
       {globalChatOpen ? (
         <GlobalChatView />
       ) : deckManagerOpen ? (
@@ -99,7 +154,25 @@ export function MainArea() {
       ) : graphViewOpen ? (
         <GraphView />
       ) : selectedPdf ? (
-        <PdfViewer filePath={selectedPdf.filepath} pdfId={selectedPdf.id} />
+        paneBPdf ? (
+          <div className="split-panes">
+            <div
+              className={`split-pane${focusedPane === 'A' ? ' split-pane--focused' : ''}`}
+              onMouseDownCapture={() => focusPane('A')}
+            >
+              <PdfViewer key={selectedPdf.id} filePath={selectedPdf.filepath} pdfId={selectedPdf.id} paneId="A" />
+            </div>
+            <div className="split-divider" />
+            <div
+              className={`split-pane${focusedPane === 'B' ? ' split-pane--focused' : ''}`}
+              onMouseDownCapture={() => focusPane('B')}
+            >
+              <PdfViewer key={paneBPdf.id} filePath={paneBPdf.filepath} pdfId={paneBPdf.id} paneId="B" />
+            </div>
+          </div>
+        ) : (
+          <PdfViewer key={selectedPdf.id} filePath={selectedPdf.filepath} pdfId={selectedPdf.id} paneId="A" />
+        )
       ) : (
         <div className="empty-state-wrap">
 
@@ -155,6 +228,8 @@ export function MainArea() {
 
         </div>
       )}
+
+      <SplitPanePickerModal open={splitPickerOpen} onClose={() => setSplitPickerOpen(false)} />
     </main>
   );
 }
