@@ -26,3 +26,6 @@ src-tauri/gen/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local Claude Code context (internal notes, not for public repo)
+CLAUDE.md
