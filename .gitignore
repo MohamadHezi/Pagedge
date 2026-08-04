@@ -27,5 +27,10 @@ src-tauri/gen/
 .DS_Store
 Thumbs.db
 
-# Local Claude Code context (internal notes, not for public repo)
+# Local AI-tooling context/config (internal notes, not for public repo)
 CLAUDE.md
+DESIGN.md
+PRODUCT.md
+.agents/
+.codex/
+.impeccable/
