@@ -34,3 +34,6 @@ PRODUCT.md
 .agents/
 .codex/
 .impeccable/
+.claude/skills/
+.claude/settings.local.json
+.claude/worktrees/
